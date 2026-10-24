@@ -39,6 +39,7 @@ fn test_lru_cache_eviction() {
             rgba: vec![0u8; 40_000],
             decode_duration_us: 100,
             orientation: 1,
+            is_hdr: false,
         })
     };
 

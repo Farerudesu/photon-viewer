@@ -11,6 +11,7 @@ pub struct DecodedImage {
     pub rgba: Vec<u8>,
     pub decode_duration_us: u128,
     pub orientation: u16,
+    pub is_hdr: bool,
 }
 
 impl DecodedImage {
@@ -22,6 +23,7 @@ impl DecodedImage {
             rgba,
             decode_duration_us,
             orientation: 1,
+            is_hdr: false,
         }
     }
 }
@@ -46,6 +48,7 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                 rgba: pixels,
                 decode_duration_us: duration,
                 orientation: 1,
+                is_hdr: false,
             })
         }
         Err(e) => {
@@ -63,6 +66,7 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                 rgba: rgba_img.into_raw(),
                 decode_duration_us: duration,
                 orientation: 1,
+                is_hdr: false,
             })
         }
     }

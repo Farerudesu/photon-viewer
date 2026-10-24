@@ -17,12 +17,29 @@ pub use jpeg::DecodedImage;
 
 use memmap2::Mmap;
 use std::fs::File;
+use std::io::Read;
+use std::ops::Deref;
 use std::path::Path;
 use std::time::Instant;
 
+pub enum FileBuffer {
+    Heap(Vec<u8>),
+    Mmap(Mmap),
+}
+
+impl Deref for FileBuffer {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            FileBuffer::Heap(v) => v.as_slice(),
+            FileBuffer::Mmap(m) => &m[..],
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub struct LoadedFile {
-    pub mmap: Mmap,
+    pub mmap: FileBuffer,
     pub format: ImageFormat,
     pub file_size: u64,
     pub orientation: u16,
@@ -38,8 +55,22 @@ impl LoadedFile {
             return Err("File is empty (0 bytes)".to_string());
         }
 
-        let mmap = unsafe {
-            Mmap::map(&file).map_err(|e| format!("Memory mapping failed: {}", e))?
+        // For files smaller than 64 MB (the vast majority of images), read into heap memory
+        // to prevent SIGBUS / STATUS_IN_PAGE_ERROR if external editors overwrite or truncate the file.
+        // For massive multi-hundred-MB files, use memory mapping for fast zero-copy access.
+        const MMAP_THRESHOLD: u64 = 64 * 1024 * 1024;
+        let mmap = if file_size < MMAP_THRESHOLD {
+            let mut buf = Vec::with_capacity(file_size as usize);
+            let mut reader = std::io::BufReader::new(file);
+            reader
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("Failed to read file: {}", e))?;
+            FileBuffer::Heap(buf)
+        } else {
+            let m = unsafe {
+                Mmap::map(&file).map_err(|e| format!("Memory mapping failed: {}", e))?
+            };
+            FileBuffer::Mmap(m)
         };
 
         let format = detector::detect_format_with_path(&mmap, Some(path.as_ref()));
@@ -83,10 +114,7 @@ impl LoadedFile {
                 let img = jpeg::decode_jpeg(&self.mmap)?;
                 Ok((img, None))
             }
-            ImageFormat::Png => {
-                let img = png::decode_png(&self.mmap)?;
-                Ok((img, None))
-            }
+            ImageFormat::Png => animated::decode_png_with_animation(&self.mmap),
             ImageFormat::Gif => animated::decode_gif(&self.mmap),
             ImageFormat::WebP => animated::decode_webp(&self.mmap),
             ImageFormat::Bmp => {
@@ -140,6 +168,7 @@ impl LoadedFile {
                                 rgba: rgba.into_raw(),
                                 decode_duration_us: duration,
                                 orientation: 1,
+                                is_hdr: false,
                             },
                             None,
                         ))
@@ -172,5 +201,6 @@ fn decode_with_image_crate(
         rgba: rgba.into_raw(),
         decode_duration_us: duration,
         orientation: 1,
+        is_hdr: false,
     })
 }

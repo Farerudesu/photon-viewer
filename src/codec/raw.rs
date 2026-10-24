@@ -278,6 +278,7 @@ pub fn decode_full_raw(data: &[u8]) -> Result<DecodedImage, String> {
         rgba,
         decode_duration_us: start.elapsed().as_micros(),
         orientation: 1,
+        is_hdr: false,
     })
 }
 
@@ -307,6 +308,24 @@ fn demosaic_bayer_parallel(raw: &rawloader::RawImage, pixels: &[u16], out_rgba: 
     } else {
         (1.0, 1.0, 1.0)
     };
+
+    // Camera-to-sRGB color matrix via cam_to_xyz_normalized and CIE D65 XYZ-to-sRGB
+    let cam_to_xyz = raw.cam_to_xyz_normalized();
+    let xyz_to_srgb = [
+        [3.2404542f32, -1.5371385, -0.4985314],
+        [-0.9692660, 1.8760108, 0.0415560],
+        [0.0556434, -0.2040259, 1.0572252],
+    ];
+
+    let mut matrix = [[0.0f32; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            matrix[i][j] = xyz_to_srgb[i][0] * cam_to_xyz[0][j]
+                + xyz_to_srgb[i][1] * cam_to_xyz[1][j]
+                + xyz_to_srgb[i][2] * cam_to_xyz[2][j];
+        }
+    }
+    let has_matrix = matrix[0][0] != 0.0 || matrix[0][1] != 0.0;
 
     // Parallelize per scanline
     out_rgba
@@ -345,7 +364,6 @@ fn demosaic_bayer_parallel(raw: &rawloader::RawImage, pixels: &[u16], out_rgba: 
                         // Neighboring Red / Blue horizontal or vertical
                         let h1 = raw.cfa.color_at(y, x.saturating_sub(1));
                         let (r_val, b_val) = if h1 == 0 {
-                            // Left/Right are Red, Top/Bottom are Blue
                             let r_avg = (get_pixel_normalized(pixels, width, height, x.saturating_sub(1), y, black, inv_range)
                                 + get_pixel_normalized(pixels, width, height, (x + 1).min(width - 1), y, black, inv_range))
                                 * 0.5;
@@ -354,7 +372,6 @@ fn demosaic_bayer_parallel(raw: &rawloader::RawImage, pixels: &[u16], out_rgba: 
                                 * 0.5;
                             (r_avg, b_avg)
                         } else {
-                            // Left/Right are Blue, Top/Bottom are Red
                             let b_avg = (get_pixel_normalized(pixels, width, height, x.saturating_sub(1), y, black, inv_range)
                                 + get_pixel_normalized(pixels, width, height, (x + 1).min(width - 1), y, black, inv_range))
                                 * 0.5;
@@ -388,10 +405,24 @@ fn demosaic_bayer_parallel(raw: &rawloader::RawImage, pixels: &[u16], out_rgba: 
                     }
                 };
 
-                // Apply white-balance and sRGB gamma curve (x^(1/2.2))
-                let r_out = to_srgb_u8(r * wb_r);
-                let g_out = to_srgb_u8(g * wb_g);
-                let b_out = to_srgb_u8(b * wb_b);
+                // White balance
+                let rw = r * wb_r;
+                let gw = g * wb_g;
+                let bw = b * wb_b;
+
+                // Camera matrix transformation to calibrated linear sRGB
+                let (r_lin, g_lin, b_lin) = if has_matrix {
+                    let rc = matrix[0][0] * rw + matrix[0][1] * gw + matrix[0][2] * bw;
+                    let gc = matrix[1][0] * rw + matrix[1][1] * gw + matrix[1][2] * bw;
+                    let bc = matrix[2][0] * rw + matrix[2][1] * gw + matrix[2][2] * bw;
+                    (rc, gc, bc)
+                } else {
+                    (rw, gw, bw)
+                };
+
+                let r_out = to_srgb_u8(r_lin);
+                let g_out = to_srgb_u8(g_lin);
+                let b_out = to_srgb_u8(b_lin);
 
                 let pixel_idx = x * 4;
                 row_bytes[pixel_idx] = r_out;
@@ -419,8 +450,13 @@ fn get_pixel_normalized(
 #[inline(always)]
 fn to_srgb_u8(linear: f32) -> u8 {
     let clamped = linear.clamp(0.0, 1.0);
-    // Standard gamma 2.2 approximation
-    (clamped.powf(1.0 / 2.2) * 255.0).round() as u8
+    // Standard IEC 61966-2-1 piecewise sRGB transfer function
+    let srgb = if clamped <= 0.0031308 {
+        12.92 * clamped
+    } else {
+        1.055 * clamped.powf(1.0 / 2.4) - 0.055
+    };
+    (srgb * 255.0).round() as u8
 }
 
 fn demosaic_float_parallel(raw: &rawloader::RawImage, pixels: &[f32], out_rgba: &mut [u8]) {

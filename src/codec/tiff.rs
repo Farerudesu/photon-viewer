@@ -17,5 +17,6 @@ pub fn decode_tiff(data: &[u8]) -> Result<DecodedImage, String> {
         rgba: rgba.into_raw(),
         decode_duration_us: duration,
         orientation: 1,
+        is_hdr: false,
     })
 }

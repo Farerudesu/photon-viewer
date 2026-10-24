@@ -2,7 +2,7 @@
 mod win_ipc {
     use std::ffi::c_void;
     use std::io::{BufRead, BufReader, Write};
-    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::{FromRawHandle, IntoRawHandle};
     use std::path::{Path, PathBuf};
     use std::ptr;
     use std::thread;
@@ -86,8 +86,12 @@ mod win_ipc {
                             let _ = proxy.send_event(path);
                         }
                     }
+                    // CRITICAL: Reclaim ownership so File::drop does not call CloseHandle(handle)
+                    // before DisconnectNamedPipe runs, preventing double-close and handle-recycling races.
+                    let _ = reader.into_inner().into_raw_handle();
                     unsafe {
                         DisconnectNamedPipe(handle);
+                        CloseHandle(handle);
                     }
                 } else {
                     unsafe {
@@ -99,7 +103,66 @@ mod win_ipc {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+mod unix_ipc {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+    use std::thread;
+    use winit::event_loop::EventLoopProxy;
+
+    fn get_socket_path() -> PathBuf {
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            PathBuf::from(runtime_dir).join("photon_viewer.sock")
+        } else {
+            std::env::temp_dir().join("photon_viewer.sock")
+        }
+    }
+
+    pub fn try_send_to_existing_instance(path: Option<&Path>) -> bool {
+        let sock_path = get_socket_path();
+        if let Ok(mut stream) = UnixStream::connect(&sock_path) {
+            let msg = path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let _ = writeln!(stream, "{}", msg);
+            let _ = stream.flush();
+            return true;
+        }
+        if sock_path.exists() {
+            let _ = std::fs::remove_file(&sock_path);
+        }
+        false
+    }
+
+    pub fn start_ipc_server(proxy: EventLoopProxy<PathBuf>) {
+        let sock_path = get_socket_path();
+        if sock_path.exists() {
+            let _ = std::fs::remove_file(&sock_path);
+        }
+
+        thread::spawn(move || {
+            let listener = match UnixListener::bind(&sock_path) {
+                Ok(l) => l,
+                Err(_) => return,
+            };
+
+            for stream in listener.incoming() {
+                if let Ok(stream) = stream {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_ok() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let path = PathBuf::from(trimmed);
+                            let _ = proxy.send_event(path);
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 mod non_win_ipc {
     use std::path::{Path, PathBuf};
     use winit::event_loop::EventLoopProxy;
@@ -114,5 +177,8 @@ mod non_win_ipc {
 #[cfg(windows)]
 pub use win_ipc::*;
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub use unix_ipc::*;
+
+#[cfg(not(any(windows, unix)))]
 pub use non_win_ipc::*;

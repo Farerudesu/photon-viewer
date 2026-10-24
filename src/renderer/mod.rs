@@ -61,6 +61,7 @@ pub struct RenderState {
     image_bind_group: Option<wgpu::BindGroup>,
     pub image_width: u32,
     pub image_height: u32,
+    pub max_texture_dimension_2d: u32,
 
     // HUD pipeline
     hud_pipeline: wgpu::RenderPipeline,
@@ -93,14 +94,38 @@ impl RenderState {
             .create_surface(window.clone())
             .map_err(|e| format!("Failed to create surface: {}", e))?;
 
-        let adapter = instance
+        let mut adapter_opt = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
-            .await
-            .ok_or("Failed to find suitable GPU adapter")?;
+            .await;
+
+        if adapter_opt.is_none() {
+            log::warn!("HighPerformance GPU adapter not found, trying LowPower adapter");
+            adapter_opt = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await;
+        }
+
+        if adapter_opt.is_none() {
+            log::warn!("Hardware GPU adapter not found, falling back to software rasterizer (WARP/llvmpipe)");
+            adapter_opt = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::None,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: true,
+                })
+                .await;
+        }
+
+        let adapter = adapter_opt.ok_or("Failed to find suitable GPU or software rendering adapter")?;
+        let max_texture_dimension_2d = adapter.limits().max_texture_dimension_2d;
 
         let (device, queue) = adapter
             .request_device(
@@ -141,7 +166,7 @@ impl RenderState {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
@@ -396,6 +421,7 @@ impl RenderState {
             image_bind_group: None,
             image_width: 0,
             image_height: 0,
+            max_texture_dimension_2d,
             hud_pipeline,
             hud_uniform_buffer,
             hud_bind_group,
@@ -426,16 +452,30 @@ impl RenderState {
         }
     }
 
-    pub fn upload_image(&mut self, width: u32, height: u32, rgba_pixels: &[u8]) {
+    pub fn upload_image(&mut self, width: u32, height: u32, rgba_pixels: &[u8], is_hdr: bool) {
         if width == 0 || height == 0 {
             return;
         }
 
-        // Explicitly destroy previous texture to immediately release GPU VRAM
+        // Drop previous texture without synchronous GPU stall
         if let Some(old_tex) = self.image_texture.take() {
             old_tex.destroy();
         }
-        self.device.poll(wgpu::Maintain::wait());
+
+        let format = if is_hdr {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        };
+
+        let bytes_per_pixel: u32 = if is_hdr { 8 } else { 4 };
+
+        // Anti-aliasing: generate mipmap levels for 8-bit images to eliminate moire at fit-to-window scale
+        let num_mips = if is_hdr || width < 64 || height < 64 {
+            1
+        } else {
+            ((width.max(height) as f32).log2().floor() as u32 + 1).clamp(1, 5)
+        };
 
         let size = wgpu::Extent3d {
             width,
@@ -446,14 +486,15 @@ impl RenderState {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Image Texture"),
             size,
-            mip_level_count: 1,
+            mip_level_count: num_mips,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
+        // Upload level 0
         self.queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &texture,
@@ -464,11 +505,75 @@ impl RenderState {
             rgba_pixels,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * width),
+                bytes_per_row: Some(bytes_per_pixel * width),
                 rows_per_image: Some(height),
             },
             size,
         );
+
+        // Generate and upload mip levels 1..num_mips using 2x2 box filtering
+        if num_mips > 1 {
+            let mut prev_w = width;
+            let mut prev_h = height;
+            let mut prev_data = rgba_pixels.to_vec();
+
+            for level in 1..num_mips {
+                let cur_w = (prev_w / 2).max(1);
+                let cur_h = (prev_h / 2).max(1);
+                let mut cur_data = vec![0u8; (cur_w * cur_h * 4) as usize];
+
+                let prev_stride = (prev_w * 4) as usize;
+                let cur_stride = (cur_w * 4) as usize;
+
+                for y in 0..cur_h {
+                    let py0 = (y * 2) as usize * prev_stride;
+                    let py1 = if y * 2 + 1 < prev_h { (y * 2 + 1) as usize * prev_stride } else { py0 };
+                    let dst_row = y as usize * cur_stride;
+
+                    for x in 0..cur_w {
+                        let px0 = (x * 2) as usize * 4;
+                        let px1 = if x * 2 + 1 < prev_w { (x * 2 + 1) as usize * 4 } else { px0 };
+
+                        let i00 = py0 + px0;
+                        let i10 = py0 + px1;
+                        let i01 = py1 + px0;
+                        let i11 = py1 + px1;
+
+                        let dst = dst_row + x as usize * 4;
+                        cur_data[dst] = ((prev_data[i00] as u32 + prev_data[i10] as u32 + prev_data[i01] as u32 + prev_data[i11] as u32) / 4) as u8;
+                        cur_data[dst + 1] = ((prev_data[i00 + 1] as u32 + prev_data[i10 + 1] as u32 + prev_data[i01 + 1] as u32 + prev_data[i11 + 1] as u32) / 4) as u8;
+                        cur_data[dst + 2] = ((prev_data[i00 + 2] as u32 + prev_data[i10 + 2] as u32 + prev_data[i01 + 2] as u32 + prev_data[i11 + 2] as u32) / 4) as u8;
+                        cur_data[dst + 3] = ((prev_data[i00 + 3] as u32 + prev_data[i10 + 3] as u32 + prev_data[i01 + 3] as u32 + prev_data[i11 + 3] as u32) / 4) as u8;
+                    }
+                }
+
+                let mip_size = wgpu::Extent3d {
+                    width: cur_w,
+                    height: cur_h,
+                    depth_or_array_layers: 1,
+                };
+
+                self.queue.write_texture(
+                    wgpu::ImageCopyTexture {
+                        texture: &texture,
+                        mip_level: level,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &cur_data,
+                    wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * cur_w),
+                        rows_per_image: Some(cur_h),
+                    },
+                    mip_size,
+                );
+
+                prev_w = cur_w;
+                prev_h = cur_h;
+                prev_data = cur_data;
+            }
+        }
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 

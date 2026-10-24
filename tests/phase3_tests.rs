@@ -103,5 +103,6 @@ fn test_hdr_rgbe_decoding() {
     let decoded = decode_hdr(&encoded).expect("Failed to decode HDR");
     assert_eq!(decoded.width, width);
     assert_eq!(decoded.height, height);
-    assert_eq!(decoded.rgba.len(), (width * height * 4) as usize);
+    assert!(decoded.is_hdr);
+    assert_eq!(decoded.rgba.len(), (width * height * 8) as usize);
 }

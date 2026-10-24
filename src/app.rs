@@ -68,15 +68,64 @@ pub struct App {
     is_oled_black: bool,
     last_interaction: Instant,
 
+    // Adaptive prefetch radius
+    pub prefetch_radius: usize,
+
     // Navigation debounce for rapid arrow skipping
     pending_path: Option<PathBuf>,
+}
+
+#[cfg(target_os = "windows")]
+fn get_system_ram_bytes() -> u64 {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(stat: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    if ok != 0 && status.total_phys > 0 {
+        status.total_phys
+    } else {
+        8 * 1024 * 1024 * 1024
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_system_ram_bytes() -> u64 {
+    8 * 1024 * 1024 * 1024
 }
 
 impl App {
     pub async fn new(window: Arc<Window>, initial_file: Option<PathBuf>) -> Result<Self, String> {
         let render_state = RenderState::new(window).await?;
 
-        let cache = Arc::new(SharedCache::new(512 * 1024 * 1024));
+        let ram = get_system_ram_bytes();
+        let cache_bytes = ((ram / 4) as usize).clamp(256 * 1024 * 1024, 2 * 1024 * 1024 * 1024);
+        let prefetch_radius = if ram >= 12 * 1024 * 1024 * 1024 { 2 } else { 1 };
+        log::info!("System RAM: {} MB, SharedCache: {} MB, Prefetch radius: {}", ram / 1024 / 1024, cache_bytes / 1024 / 1024, prefetch_radius);
+
+        let cache = Arc::new(SharedCache::new(cache_bytes));
         let pipeline = PrefetchPipeline::new(cache.clone());
         let (folder_tx, folder_rx) = crossbeam_channel::unbounded();
         let (raw_tx, raw_rx) = crossbeam_channel::unbounded();
@@ -120,6 +169,7 @@ impl App {
             color_space: 0,
             is_oled_black: false,
             last_interaction: Instant::now(),
+            prefetch_radius,
             pending_path: None,
         };
 
@@ -128,6 +178,12 @@ impl App {
         }
 
         Ok(app)
+    }
+
+    pub fn should_use_tiling(&self, width: u32, height: u32) -> bool {
+        width > self.render_state.max_texture_dimension_2d
+            || height > self.render_state.max_texture_dimension_2d
+            || is_huge_image(width, height)
     }
 
     pub fn open_file_and_scan_folder(&mut self, path: PathBuf) {
@@ -166,19 +222,20 @@ impl App {
             self.flip_h = fh;
             self.flip_v = fv;
 
-            if is_huge_image(cached.width, cached.height) {
-                let grid = TileGrid::new(cached.width, cached.height, cached.rgba.clone());
+            if self.should_use_tiling(cached.width, cached.height) {
+                let grid = TileGrid::new(cached.width, cached.height, cached.rgba.clone().into());
                 self.render_state.upload_image(
                     grid.overview.width,
                     grid.overview.height,
                     &grid.overview.rgba,
+                    false,
                 );
                 self.tile_manager.set_grid(grid);
                 self.format_name = "Gigapixel (Tiled)";
             } else {
                 self.tile_manager.clear();
                 self.render_state
-                    .upload_image(cached.width, cached.height, &cached.rgba);
+                    .upload_image(cached.width, cached.height, &cached.rgba, cached.is_hdr);
                 self.format_name = crate::codec::detector::detect_format_with_path(&[], Some(path)).name();
             }
 
@@ -200,6 +257,7 @@ impl App {
                 self.rotation_deg = rot;
                 self.flip_h = fh;
                 self.flip_v = fv;
+                self.color_space = crate::codec::exif::detect_color_space(&file.mmap);
 
                 if fmt.is_raw() {
                     match file.decode_raw() {
@@ -218,12 +276,13 @@ impl App {
                             };
 
                             let arc_decoded = Arc::new(decoded);
-                            if is_huge_image(arc_decoded.width, arc_decoded.height) {
-                                let grid = TileGrid::new(arc_decoded.width, arc_decoded.height, arc_decoded.rgba.clone());
+                            if self.should_use_tiling(arc_decoded.width, arc_decoded.height) {
+                                let grid = TileGrid::new(arc_decoded.width, arc_decoded.height, arc_decoded.rgba.clone().into());
                                 self.render_state.upload_image(
                                     grid.overview.width,
                                     grid.overview.height,
                                     &grid.overview.rgba,
+                                    false,
                                 );
                                 self.tile_manager.set_grid(grid);
                                 self.format_name = "Gigapixel (Tiled)";
@@ -233,6 +292,7 @@ impl App {
                                     arc_decoded.width,
                                     arc_decoded.height,
                                     &arc_decoded.rgba,
+                                    arc_decoded.is_hdr,
                                 );
                             }
 
@@ -283,12 +343,13 @@ impl App {
                             let arc_decoded = Arc::new(decoded);
                             self.cache.insert(path.to_path_buf(), arc_decoded.clone());
 
-                            if is_huge_image(arc_decoded.width, arc_decoded.height) {
-                                let grid = TileGrid::new(arc_decoded.width, arc_decoded.height, arc_decoded.rgba.clone());
+                            if self.should_use_tiling(arc_decoded.width, arc_decoded.height) {
+                                let grid = TileGrid::new(arc_decoded.width, arc_decoded.height, arc_decoded.rgba.clone().into());
                                 self.render_state.upload_image(
                                     grid.overview.width,
                                     grid.overview.height,
                                     &grid.overview.rgba,
+                                    false,
                                 );
                                 self.tile_manager.set_grid(grid);
                                 self.format_name = "Gigapixel (Tiled)";
@@ -298,6 +359,7 @@ impl App {
                                     arc_decoded.width,
                                     arc_decoded.height,
                                     &arc_decoded.rgba,
+                                    arc_decoded.is_hdr,
                                 );
                             }
 
@@ -343,18 +405,36 @@ impl App {
             if elapsed_ms >= current_frame.delay_ms {
                 self.anim_frame_idx = (self.anim_frame_idx + 1) % anim.frames.len();
                 let next_frame = &anim.frames[self.anim_frame_idx];
-                self.render_state.upload_image(anim.width, anim.height, &next_frame.rgba);
+                self.render_state.upload_image(anim.width, anim.height, &next_frame.rgba, false);
                 self.last_frame_time = Instant::now();
                 self.render_state.window.request_redraw();
             }
         }
     }
 
+    pub fn animation_deadline(&self) -> Option<std::time::Instant> {
+        if let Some(ref anim) = self.current_animation {
+            if anim.frames.is_empty() {
+                return None;
+            }
+            let current_frame = &anim.frames[self.anim_frame_idx];
+            let elapsed = self.last_frame_time.elapsed();
+            let delay = std::time::Duration::from_millis(current_frame.delay_ms.max(10) as u64);
+            if elapsed >= delay {
+                Some(Instant::now())
+            } else {
+                Some(self.last_frame_time + delay)
+            }
+        } else {
+            None
+        }
+    }
+
     pub fn trigger_prefetch(&self) {
         if !self.folder_files.is_empty() {
-            // Prefetch immediate neighbors (N+1 and N-1) with canceled previous generations
+            // Adaptive prefetch radius based on system physical RAM (radius 2 for >=12GB, 1 for low RAM)
             self.pipeline
-                .prefetch_neighbors(&self.folder_files, self.folder_index, 1);
+                .prefetch_neighbors(&self.folder_files, self.folder_index, self.prefetch_radius);
         }
     }
 
@@ -374,7 +454,10 @@ impl App {
                 self.pending_path = None;
                 self.display_image_path(&path);
             } else {
-                self.pending_path = Some(path);
+                self.pending_path = None;
+                self.current_path = Some(path.clone());
+                self.pipeline.request_active(path);
+                self.trigger_prefetch();
                 self.render_state.window.request_redraw();
             }
         }
@@ -396,7 +479,10 @@ impl App {
                 self.pending_path = None;
                 self.display_image_path(&path);
             } else {
-                self.pending_path = Some(path);
+                self.pending_path = None;
+                self.current_path = Some(path.clone());
+                self.pipeline.request_active(path);
+                self.trigger_prefetch();
                 self.render_state.window.request_redraw();
             }
         }
@@ -415,7 +501,10 @@ impl App {
                 self.pending_path = None;
                 self.display_image_path(&path);
             } else {
-                self.pending_path = Some(path);
+                self.pending_path = None;
+                self.current_path = Some(path.clone());
+                self.pipeline.request_active(path);
+                self.trigger_prefetch();
                 self.render_state.window.request_redraw();
             }
         }
@@ -434,7 +523,10 @@ impl App {
                 self.pending_path = None;
                 self.display_image_path(&path);
             } else {
-                self.pending_path = Some(path);
+                self.pending_path = None;
+                self.current_path = Some(path.clone());
+                self.pipeline.request_active(path);
+                self.trigger_prefetch();
                 self.render_state.window.request_redraw();
             }
         }
@@ -625,12 +717,13 @@ impl App {
                     self.decode_us = full_image.decode_duration_us;
                     self.cache.insert(raw_path.clone(), full_image.clone());
 
-                    if is_huge_image(full_image.width, full_image.height) {
-                        let grid = TileGrid::new(full_image.width, full_image.height, full_image.rgba.clone());
+                    if self.should_use_tiling(full_image.width, full_image.height) {
+                        let grid = TileGrid::new(full_image.width, full_image.height, full_image.rgba.clone().into());
                         self.render_state.upload_image(
                             grid.overview.width,
                             grid.overview.height,
                             &grid.overview.rgba,
+                            false,
                         );
                         self.tile_manager.set_grid(grid);
                         self.format_name = "Gigapixel (Tiled)";
@@ -640,6 +733,7 @@ impl App {
                             full_image.width,
                             full_image.height,
                             &full_image.rgba,
+                            full_image.is_hdr,
                         );
                     }
                     self.update_window_title();
@@ -658,9 +752,26 @@ impl App {
                             self.rotation_deg = rot;
                             self.flip_h = fh;
                             self.flip_v = fv;
-                            self.render_state.upload_image(img.width, img.height, &img.rgba);
+
+                            if self.should_use_tiling(img.width, img.height) {
+                                let grid = TileGrid::new(img.width, img.height, img.rgba.clone().into());
+                                self.render_state.upload_image(
+                                    grid.overview.width,
+                                    grid.overview.height,
+                                    &grid.overview.rgba,
+                                    false,
+                                );
+                                self.tile_manager.set_grid(grid);
+                                self.format_name = "Gigapixel (Tiled)";
+                            } else {
+                                self.tile_manager.clear();
+                                self.render_state.upload_image(img.width, img.height, &img.rgba, img.is_hdr);
+                                self.format_name = crate::codec::detector::detect_format_with_path(&[], Some(&result.path)).name();
+                            }
+
                             self.decode_us = img.decode_duration_us;
                             self.fit_to_window();
+                            self.trigger_prefetch();
                             self.render_state.window.request_redraw();
                         }
                     }
@@ -689,8 +800,8 @@ impl App {
                     self.pan_x += dx;
                     self.pan_y += dy;
                     self.last_cursor_pos = (position.x, position.y);
+                    self.render_state.window.request_redraw();
                 }
-                self.render_state.window.request_redraw();
                 true
             }
             WindowEvent::MouseInput { state, button, .. } => {

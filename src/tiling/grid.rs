@@ -33,12 +33,11 @@ pub struct TileGrid {
 }
 
 impl TileGrid {
-    pub fn new(full_width: u32, full_height: u32, rgba_pixels: Vec<u8>) -> Self {
+    pub fn new(full_width: u32, full_height: u32, rgba_pixels: Arc<Vec<u8>>) -> Self {
         let cols = (full_width + TILE_SIZE - 1) / TILE_SIZE;
         let rows = (full_height + TILE_SIZE - 1) / TILE_SIZE;
 
-        let source = Arc::new(rgba_pixels);
-        let overview = Arc::new(create_overview(full_width, full_height, &source, 2048));
+        let overview = Arc::new(create_overview(full_width, full_height, &rgba_pixels, 4096));
 
         Self {
             full_width,
@@ -47,7 +46,7 @@ impl TileGrid {
             cols,
             rows,
             overview,
-            source_pixels: source,
+            source_pixels: rgba_pixels,
         }
     }
 
@@ -96,7 +95,7 @@ impl TileGrid {
     }
 }
 
-/// Creates a downsampled base overview proxy fitting within max_dimension
+/// Creates a downsampled base overview proxy fitting within max_dimension using box averaging
 fn create_overview(full_w: u32, full_h: u32, pixels: &[u8], max_dim: u32) -> DecodedImage {
     let scale = ((full_w.max(full_h) + max_dim - 1) / max_dim).max(1);
 
@@ -111,18 +110,37 @@ fn create_overview(full_w: u32, full_h: u32, pixels: &[u8], max_dim: u32) -> Dec
         .par_chunks_exact_mut(out_stride)
         .enumerate()
         .for_each(|(oy, row)| {
-            let sy = oy as u32 * scale;
-            let src_row_start = (sy as usize) * full_stride;
+            let sy_start = oy as u32 * scale;
+            let sy_end = ((oy as u32 + 1) * scale).min(full_h);
+            let box_h = (sy_end - sy_start).max(1);
 
             for ox in 0..out_w {
-                let sx = ox * scale;
-                let src_idx = src_row_start + (sx * 4) as usize;
+                let sx_start = ox * scale;
+                let sx_end = ((ox + 1) * scale).min(full_w);
+                let box_w = (sx_end - sx_start).max(1);
+                let count = (box_w * box_h) as u64;
+
+                let mut sum_r = 0u64;
+                let mut sum_g = 0u64;
+                let mut sum_b = 0u64;
+                let mut sum_a = 0u64;
+
+                for sy in sy_start..sy_end {
+                    let row_start = (sy as usize) * full_stride;
+                    for sx in sx_start..sx_end {
+                        let idx = row_start + (sx as usize) * 4;
+                        sum_r += pixels[idx] as u64;
+                        sum_g += pixels[idx + 1] as u64;
+                        sum_b += pixels[idx + 2] as u64;
+                        sum_a += pixels[idx + 3] as u64;
+                    }
+                }
 
                 let dst_idx = (ox * 4) as usize;
-                row[dst_idx] = pixels[src_idx];
-                row[dst_idx + 1] = pixels[src_idx + 1];
-                row[dst_idx + 2] = pixels[src_idx + 2];
-                row[dst_idx + 3] = pixels[src_idx + 3];
+                row[dst_idx] = (sum_r / count) as u8;
+                row[dst_idx + 1] = (sum_g / count) as u8;
+                row[dst_idx + 2] = (sum_b / count) as u8;
+                row[dst_idx + 3] = (sum_a / count) as u8;
             }
         });
 
@@ -132,5 +150,6 @@ fn create_overview(full_w: u32, full_h: u32, pixels: &[u8], max_dim: u32) -> Dec
         rgba: out_rgba,
         decode_duration_us: 0,
         orientation: 1,
+        is_hdr: false,
     }
 }

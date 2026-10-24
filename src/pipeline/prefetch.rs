@@ -26,7 +26,8 @@ pub struct PrefetchPipeline {
 
 impl PrefetchPipeline {
     pub fn new(cache: Arc<SharedCache>) -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded();
+        // Bounded channel to prevent unbounded RAM accumulation during rapid navigation
+        let (sender, receiver) = crossbeam_channel::bounded(8);
 
         // Dedicated decoding thread pool
         let num_threads = std::thread::available_parallelism()
@@ -98,7 +99,7 @@ impl PrefetchPipeline {
                 cache.insert(path.clone(), img.clone());
             }
 
-            let _ = sender.send(DecodeResult {
+            let _ = sender.try_send(DecodeResult {
                 path,
                 image: result,
                 generation,
@@ -173,7 +174,7 @@ impl PrefetchPipeline {
                     cache.insert(path.clone(), img.clone());
                 }
 
-                let _ = sender.send(DecodeResult {
+                let _ = sender.try_send(DecodeResult {
                     path,
                     image: result,
                     generation,

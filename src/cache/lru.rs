@@ -43,8 +43,11 @@ impl LruMemoryCache {
         if let Some(&index) = self.map.get(path) {
             self.move_to_front(index);
             self.hits += 1;
-            let entry = self.entries[index].as_ref().unwrap();
-            Some(entry.image.clone())
+            if let Some(Some(entry)) = self.entries.get(index) {
+                Some(entry.image.clone())
+            } else {
+                None
+            }
         } else {
             self.misses += 1;
             None
@@ -52,7 +55,9 @@ impl LruMemoryCache {
     }
 
     pub fn insert(&mut self, path: PathBuf, image: Arc<DecodedImage>) {
-        let size_bytes = (image.width as usize) * (image.height as usize) * 4;
+        let size_bytes = image.rgba.len().max(
+            (image.width as usize).saturating_mul(image.height as usize).saturating_mul(4),
+        );
 
         // If a single image is larger than the entire cache, don't store it
         if size_bytes > self.max_bytes {
@@ -61,9 +66,14 @@ impl LruMemoryCache {
 
         // If entry already exists, update it
         if let Some(&index) = self.map.get(&path) {
-            let old_size = self.entries[index].as_ref().unwrap().size_bytes;
+            let old_size = self
+                .entries
+                .get(index)
+                .and_then(|e| e.as_ref())
+                .map(|e| e.size_bytes)
+                .unwrap_or(0);
             self.current_bytes = self.current_bytes.saturating_sub(old_size);
-            if let Some(entry) = self.entries[index].as_mut() {
+            if let Some(Some(entry)) = self.entries.get_mut(index) {
                 entry.image = image;
                 entry.size_bytes = size_bytes;
             }
@@ -80,13 +90,23 @@ impl LruMemoryCache {
 
         // Allocate slot
         let index = if let Some(idx) = self.free_slots.pop() {
-            self.entries[idx] = Some(CacheEntry {
-                image,
-                size_bytes,
-                prev: None,
-                next: self.head,
-                path: path.clone(),
-            });
+            if idx < self.entries.len() {
+                self.entries[idx] = Some(CacheEntry {
+                    image,
+                    size_bytes,
+                    prev: None,
+                    next: self.head,
+                    path: path.clone(),
+                });
+            } else {
+                self.entries.push(Some(CacheEntry {
+                    image,
+                    size_bytes,
+                    prev: None,
+                    next: self.head,
+                    path: path.clone(),
+                }));
+            }
             idx
         } else {
             let idx = self.entries.len();
@@ -101,7 +121,7 @@ impl LruMemoryCache {
         };
 
         if let Some(old_head) = self.head {
-            if let Some(entry) = self.entries[old_head].as_mut() {
+            if let Some(Some(entry)) = self.entries.get_mut(old_head) {
                 entry.prev = Some(index);
             }
         } else {
@@ -118,17 +138,21 @@ impl LruMemoryCache {
             return; // Already at front
         }
 
-        let (prev, next) = {
-            let entry = self.entries[index].as_ref().unwrap();
-            (entry.prev, entry.next)
+        let (prev, next) = match self.entries.get(index).and_then(|e| e.as_ref()) {
+            Some(entry) => (entry.prev, entry.next),
+            None => return,
         };
 
         // Unlink
         if let Some(p) = prev {
-            self.entries[p].as_mut().unwrap().next = next;
+            if let Some(Some(entry)) = self.entries.get_mut(p) {
+                entry.next = next;
+            }
         }
         if let Some(n) = next {
-            self.entries[n].as_mut().unwrap().prev = prev;
+            if let Some(Some(entry)) = self.entries.get_mut(n) {
+                entry.prev = prev;
+            }
         }
         if self.tail == Some(index) {
             self.tail = prev;
@@ -136,35 +160,45 @@ impl LruMemoryCache {
 
         // Link at head
         let old_head = self.head;
-        let entry = self.entries[index].as_mut().unwrap();
-        entry.prev = None;
-        entry.next = old_head;
+        if let Some(Some(entry)) = self.entries.get_mut(index) {
+            entry.prev = None;
+            entry.next = old_head;
+        }
 
         if let Some(h) = old_head {
-            self.entries[h].as_mut().unwrap().prev = Some(index);
+            if let Some(Some(entry)) = self.entries.get_mut(h) {
+                entry.prev = Some(index);
+            }
         }
         self.head = Some(index);
     }
 
     fn evict_tail(&mut self) {
         if let Some(tail_idx) = self.tail {
-            let (prev, size, path) = {
-                let entry = self.entries[tail_idx].as_ref().unwrap();
-                (entry.prev, entry.size_bytes, entry.path.clone())
+            let (prev, size, path) = match self.entries.get(tail_idx).and_then(|e| e.as_ref()) {
+                Some(entry) => (entry.prev, entry.size_bytes, entry.path.clone()),
+                None => {
+                    self.tail = None;
+                    return;
+                }
             };
 
             self.map.remove(&path);
             self.current_bytes = self.current_bytes.saturating_sub(size);
 
             if let Some(p) = prev {
-                self.entries[p].as_mut().unwrap().next = None;
+                if let Some(Some(entry)) = self.entries.get_mut(p) {
+                    entry.next = None;
+                }
                 self.tail = Some(p);
             } else {
                 self.head = None;
                 self.tail = None;
             }
 
-            self.entries[tail_idx] = None;
+            if let Some(entry_slot) = self.entries.get_mut(tail_idx) {
+                *entry_slot = None;
+            }
             self.free_slots.push(tail_idx);
         }
     }

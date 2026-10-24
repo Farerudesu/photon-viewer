@@ -57,57 +57,20 @@ impl FolderScanner {
 }
 
 pub fn is_potential_image_file(path: &Path) -> bool {
-    let ext = match path.extension() {
-        Some(e) => e.to_string_lossy().to_ascii_lowercase(),
-        None => return true, // Files without extension might still be images (magic bytes will verify)
+    let Some(ext) = path.extension() else {
+        return false; // Extensionless files (e.g. LICENSE, Makefile) are NOT images
     };
 
-    matches!(
-        ext.as_str(),
-        "jpg"
-            | "jpeg"
-            | "png"
-            | "gif"
-            | "webp"
-            | "bmp"
-            | "tiff"
-            | "tif"
-            | "cr2"
-            | "cr3"
-            | "crw"
-            | "nef"
-            | "nrw"
-            | "arw"
-            | "srf"
-            | "sr2"
-            | "raf"
-            | "orf"
-            | "rw2"
-            | "dng"
-            | "pef"
-            | "srw"
-            | "3fr"
-            | "fff"
-            | "iiq"
-            | "x3f"
-            | "rwl"
-            | "gpr"
-            | "kdc"
-            | "dcr"
-            | "mrw"
-            | "erf"
-            | "mef"
-            | "avif"
-            | "heic"
-            | "heif"
-            | "jxl"
-            | "hdr"
-            | "exr"
-            | "psd"
-            | "ico"
-            | "tga"
-            | "svg"
-    )
+    const SUPPORTED_EXTS: &[&str] = &[
+        "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif",
+        "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2",
+        "raf", "orf", "rw2", "dng", "pef", "srw", "3fr", "fff",
+        "iiq", "x3f", "rwl", "gpr", "kdc", "dcr", "mrw", "erf",
+        "mef", "hdr", "exr", "psd",
+        "ico", "tga", "svg", "pnm", "pam", "ppm", "pgm", "dds", "qoi",
+    ];
+
+    SUPPORTED_EXTS.iter().any(|&s| ext.eq_ignore_ascii_case(s))
 }
 
 /// Natural sort comparison: compares numeric segments numerically, letters alphabetically

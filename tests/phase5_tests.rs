@@ -32,7 +32,7 @@ fn test_tile_grid_generation_and_overview() {
         }
     }
 
-    let grid = TileGrid::new(width, height, pixels);
+    let grid = TileGrid::new(width, height, pixels.into());
 
     // Verify grid dimensions
     let expected_cols = (width + TILE_SIZE - 1) / TILE_SIZE; // (2048 + 511)/512 = 4
@@ -41,8 +41,8 @@ fn test_tile_grid_generation_and_overview() {
     assert_eq!(grid.rows, expected_rows);
 
     // Verify overview proxy
-    assert!(grid.overview.width <= 2048);
-    assert!(grid.overview.height <= 2048);
+    assert!(grid.overview.width <= 4096);
+    assert!(grid.overview.height <= 4096);
     assert_eq!(grid.overview.rgba.len(), (grid.overview.width * grid.overview.height * 4) as usize);
 
     // Extract tile (0, 0)
@@ -74,7 +74,7 @@ fn test_tile_manager_viewport_visibility() {
     let width = 4096u32;
     let height = 4096u32;
     let pixels = vec![200u8; (width * height * 4) as usize];
-    let grid = TileGrid::new(width, height, pixels);
+    let grid = TileGrid::new(width, height, pixels.into());
 
     let mut manager = TileManager::new();
     manager.set_grid(grid);

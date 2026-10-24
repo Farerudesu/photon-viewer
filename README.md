@@ -93,10 +93,22 @@ Measured on a Windows 10/11 x64 desktop (NVMe SSD, AMD Ryzen / Intel Core):
 
 | Category | Formats |
 | :--- | :--- |
-| **Standard Raster** | JPEG, PNG, WebP, GIF (Animated), BMP, TIFF, TGA, ICO, QOI |
+| **Standard Raster** | JPEG, PNG, WebP, GIF (Animated), APNG (Animated), BMP, TIFF, TGA, ICO, QOI |
 | **RAW Camera Formats** | Nikon (`.nef`), Sony (`.arw`), Canon (`.cr2`, `.cr3`), Fujifilm (`.raf`), Olympus (`.orf`), Panasonic (`.rw2`), Adobe Digital Negative (`.dng`) |
-| **High Dynamic Range** | HDR (Radiance RGBE), OpenEXR (`.exr`) |
-| **Graphics & Vector** | SVG, Photoshop PSD, DirectDraw Surface (DDS), PNM |
+| **High Dynamic Range** | HDR (Radiance RGBE), OpenEXR (`.exr`) — *Native 16-bit float linear pipeline* |
+| **Graphics & Vector** | SVG (High-res preview raster), Photoshop PSD, DirectDraw Surface (DDS), PNM (PPM/PGM/PBM) |
+
+---
+
+## 🔬 Color Pipeline & Architectural Notes
+
+* **True HDR Pipeline**: Radiance `.hdr` and OpenEXR `.exr` preserve unclipped linear floating-point luminances via packed half-float (`Rgba16Float`) textures, applying GPU-side Reinhard or ACES tone-mapping without CPU quantization.
+* **ICC & Color Space Awareness**: Embedded JPEG APP2 ICC, PNG iCCP, and EXIF color space tags (Display P3, Adobe RGB) are detected and transformed via column-major WGSL matrix kernels.
+* **Camera Matrix Demosaicing**: RAW Bayer CFA demosaicing computes camera-to-XYZ calibration matrices normalized for CIE D65, mapping to sRGB with standard IEC 61966-2-1 piecewise EOTF.
+* **Hardware Trilinear Mipmapping**: Automatically generates 2x2 box-filtered mipmaps for textures, eliminating moiré, flickering, and aliasing artifacts when downscaled or in fit-to-window mode.
+* **Standard Raster 16-bit to 8-bit Trade-Off**: Non-HDR 16-bit PNG/TIFF files are normalized to 8-bit per channel on decode to maximize RAM efficiency and sub-millisecond GPU upload speeds.
+* **SVG Vector Rasterization**: Scalable Vector Graphics are pre-rendered at high resolution for instantaneous panning and navigation; zooming beyond 100% operates on the high-density raster.
+* **Hardware Resilience**: Intelligent 3-tier GPU adapter fallback (`HighPerformance` → `LowPower` → Software WARP/llvmpipe) with native Win32 error dialogs and adaptive RAM-scaled caching.
 
 ---
 

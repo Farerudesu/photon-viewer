@@ -41,5 +41,6 @@ pub fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
         rgba: pixmap.take(),
         decode_duration_us: duration,
         orientation: 1,
+        is_hdr: false,
     })
 }

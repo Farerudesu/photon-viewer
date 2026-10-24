@@ -32,6 +32,7 @@ pub fn decode_psd(data: &[u8]) -> Result<DecodedImage, String> {
             rgba: rgba.into_raw(),
             decode_duration_us: start.elapsed().as_micros(),
             orientation: 1,
+            is_hdr: false,
         });
     }
 
@@ -179,5 +180,6 @@ pub fn decode_psd(data: &[u8]) -> Result<DecodedImage, String> {
         rgba,
         decode_duration_us: duration,
         orientation: 1,
+        is_hdr: false,
     })
 }

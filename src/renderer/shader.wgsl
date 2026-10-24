@@ -184,23 +184,21 @@ fn tonemap_aces(hdr: vec3<f32>) -> vec3<f32> {
 // Color Space Conversions
 // ----------------------------------------------------------------------------
 
-// Display P3 to standard sRGB 3x3 matrix
+// Display P3 to standard sRGB conversion (column-major in WGSL)
 fn convert_p3_to_srgb(p3: vec3<f32>) -> vec3<f32> {
-    let m = mat3x3<f32>(
-        1.2249, -0.0420, -0.0197,
-       -0.2247,  1.0419, -0.0786,
-        0.0000,  0.0000,  1.0979
-    );
+    let col0 = vec3<f32>(1.2249, -0.0420, -0.0197);
+    let col1 = vec3<f32>(-0.2247, 1.0419, -0.0786);
+    let col2 = vec3<f32>(0.0000, 0.0000, 1.0979);
+    let m = mat3x3<f32>(col0, col1, col2);
     return clamp(m * p3, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// Adobe RGB (1998) to standard sRGB 3x3 matrix
+// Adobe RGB (1998) to standard sRGB conversion (column-major in WGSL)
 fn convert_adobe_to_srgb(adobe: vec3<f32>) -> vec3<f32> {
-    let m = mat3x3<f32>(
-        1.3983,  0.0000,  0.0000,
-       -0.3983,  1.0000, -0.0429,
-        0.0000,  0.0000,  1.0429
-    );
+    let col0 = vec3<f32>(1.3983, 0.0000, 0.0000);
+    let col1 = vec3<f32>(-0.3983, 1.0000, -0.0429);
+    let col2 = vec3<f32>(0.0000, 0.0000, 1.0429);
+    let m = mat3x3<f32>(col0, col1, col2);
     return clamp(m * adobe, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 

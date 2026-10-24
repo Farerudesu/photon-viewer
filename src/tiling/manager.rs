@@ -19,25 +19,38 @@ pub struct GpuTile {
 
 pub struct TileManager {
     grid: Option<TileGrid>,
+    generation: u64,
     active_tiles: HashMap<TileKey, GpuTile>,
     pending_keys: HashSet<TileKey>,
-    request_tx: Sender<TileKey>,
-    result_rx: Receiver<DecodedTile>,
+    request_tx: Sender<(u64, TileKey, TileGrid)>,
+    result_rx: Receiver<(u64, DecodedTile)>,
     _worker_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl TileManager {
     pub fn new() -> Self {
-        let (req_tx, _req_rx) = crossbeam_channel::unbounded::<TileKey>();
-        let (_res_tx, res_rx) = crossbeam_channel::unbounded::<DecodedTile>();
+        // Persistent worker with bounded channel (depth 64)
+        let (req_tx, req_rx) = crossbeam_channel::bounded::<(u64, TileKey, TileGrid)>(64);
+        let (res_tx, res_rx) = crossbeam_channel::bounded::<(u64, DecodedTile)>(64);
+
+        let handle = thread::spawn(move || {
+            while let Ok((generation, key, grid)) = req_rx.recv() {
+                if let Some(tile) = grid.extract_tile(key) {
+                    if res_tx.send((generation, tile)).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
 
         Self {
             grid: None,
+            generation: 0,
             active_tiles: HashMap::with_capacity(MAX_GPU_TILES),
             pending_keys: HashSet::new(),
             request_tx: req_tx,
             result_rx: res_rx,
-            _worker_handle: None,
+            _worker_handle: Some(handle),
         }
     }
 
@@ -47,28 +60,19 @@ impl TileManager {
         }
         self.pending_keys.clear();
 
-        let (req_tx, req_rx) = crossbeam_channel::unbounded::<TileKey>();
-        let (res_tx, res_rx) = crossbeam_channel::unbounded::<DecodedTile>();
-        self.request_tx = req_tx;
-        self.result_rx = res_rx;
+        // Advance generation so in-flight tiles from the prior grid are discarded
+        self.generation = self.generation.wrapping_add(1);
 
-        let grid_clone = grid.clone();
-        let handle = thread::spawn(move || {
-            while let Ok(key) = req_rx.recv() {
-                if let Some(tile) = grid_clone.extract_tile(key) {
-                    if res_tx.send(tile).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
+        // Drain stale results from the receiver
+        while self.result_rx.try_recv().is_ok() {}
 
         self.grid = Some(grid);
-        self._worker_handle = Some(handle);
     }
 
     pub fn clear(&mut self) {
         self.grid = None;
+        self.generation = self.generation.wrapping_add(1);
+        while self.result_rx.try_recv().is_ok() {}
         for (_, tile) in self.active_tiles.drain() {
             tile.texture.destroy();
         }
@@ -89,7 +93,10 @@ impl TileManager {
         sampler_linear: &wgpu::Sampler,
         sampler_nearest: &wgpu::Sampler,
     ) {
-        while let Ok(tile) = self.result_rx.try_recv() {
+        while let Ok((gen, tile)) = self.result_rx.try_recv() {
+            if gen != self.generation {
+                continue; // Ignore stale tile from obsolete grid
+            }
             self.pending_keys.remove(&tile.key);
 
             let size = wgpu::Extent3d {
@@ -219,7 +226,7 @@ impl TileManager {
                     gpu_tile.last_used = now;
                 } else if !self.pending_keys.contains(&key) {
                     self.pending_keys.insert(key);
-                    let _ = self.request_tx.send(key);
+                    let _ = self.request_tx.try_send((self.generation, key, grid.clone()));
                 }
             }
         }

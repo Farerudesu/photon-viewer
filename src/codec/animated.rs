@@ -1,5 +1,6 @@
 use super::jpeg::DecodedImage;
 use image::codecs::gif::GifDecoder;
+use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, ImageDecoder};
 use std::io::Cursor;
@@ -47,6 +48,7 @@ pub fn decode_gif(data: &[u8]) -> Result<(DecodedImage, Option<AnimatedImage>), 
                 rgba: first_frame_rgba,
                 decode_duration_us: duration,
                 orientation: 1,
+                is_hdr: false,
             };
 
             let anim = if anim_frames.len() > 1 {
@@ -75,6 +77,7 @@ pub fn decode_gif(data: &[u8]) -> Result<(DecodedImage, Option<AnimatedImage>), 
                     rgba: rgba.into_raw(),
                     decode_duration_us: duration,
                     orientation: 1,
+                    is_hdr: false,
                 },
                 None,
             ))
@@ -112,6 +115,7 @@ pub fn decode_webp(data: &[u8]) -> Result<(DecodedImage, Option<AnimatedImage>),
                             rgba: first_rgba,
                             decode_duration_us: duration,
                             orientation: 1,
+                            is_hdr: false,
                         },
                         Some(AnimatedImage {
                             width,
@@ -138,7 +142,58 @@ pub fn decode_webp(data: &[u8]) -> Result<(DecodedImage, Option<AnimatedImage>),
             rgba: rgba.into_raw(),
             decode_duration_us: duration,
             orientation: 1,
+            is_hdr: false,
         },
         None,
     ))
+}
+
+pub fn decode_png_with_animation(data: &[u8]) -> Result<(DecodedImage, Option<AnimatedImage>), String> {
+    let start = Instant::now();
+
+    // Check if APNG
+    if let Ok(decoder) = PngDecoder::new(Cursor::new(data)) {
+        if decoder.is_apng().unwrap_or(false) {
+            let (width, height) = decoder.dimensions();
+            if let Ok(apng_dec) = decoder.apng() {
+                if let Ok(raw_frames) = apng_dec.into_frames().collect_frames() {
+                if !raw_frames.is_empty() {
+                    let mut anim_frames = Vec::with_capacity(raw_frames.len());
+                    for f in raw_frames {
+                        let (num, denom) = f.delay().numer_denom_ms();
+                        let delay = if denom > 0 { num / denom } else { 100 };
+                        let delay_ms = delay.max(10);
+                        anim_frames.push(AnimatedFrame {
+                            rgba: f.into_buffer().into_raw(),
+                            delay_ms,
+                        });
+                    }
+
+                    let first_rgba = anim_frames[0].rgba.clone();
+                    let duration = start.elapsed().as_micros();
+
+                    return Ok((
+                        DecodedImage {
+                            width,
+                            height,
+                            rgba: first_rgba,
+                            decode_duration_us: duration,
+                            orientation: 1,
+                            is_hdr: false,
+                        },
+                        Some(AnimatedImage {
+                            width,
+                            height,
+                            frames: anim_frames,
+                        }),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+    // Static PNG fallback
+    let static_img = super::png::decode_png(data)?;
+    Ok((static_img, None))
 }

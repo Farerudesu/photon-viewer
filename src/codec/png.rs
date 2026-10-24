@@ -68,6 +68,7 @@ pub fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
                         rgba,
                         decode_duration_us: duration,
                         orientation: 1,
+                        is_hdr: false,
                     })
                 }
                 Err(e) => {
@@ -96,5 +97,6 @@ fn decode_png_fallback(data: &[u8], start: Instant) -> Result<DecodedImage, Stri
         rgba: rgba_img.into_raw(),
         decode_duration_us: duration,
         orientation: 1,
+        is_hdr: false,
     })
 }

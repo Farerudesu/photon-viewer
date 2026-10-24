@@ -24,6 +24,9 @@ pub enum ImageFormat {
     Ico,
     Tga,
     Svg,
+    Qoi,
+    Dds,
+    Pnm,
     Unknown,
 }
 
@@ -53,6 +56,9 @@ impl ImageFormat {
             ImageFormat::Ico => "ICO",
             ImageFormat::Tga => "TGA",
             ImageFormat::Svg => "SVG",
+            ImageFormat::Qoi => "QOI",
+            ImageFormat::Dds => "DirectDraw Surface DDS",
+            ImageFormat::Pnm => "PNM/Netpbm",
             ImageFormat::Unknown => "Unknown",
         }
     }
@@ -98,7 +104,7 @@ pub fn detect_format(bytes: &[u8]) -> ImageFormat {
     }
 
     // WebP: RIFF .... WEBP
-    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         return ImageFormat::WebP;
     }
 
@@ -128,14 +134,15 @@ pub fn detect_format(bytes: &[u8]) -> ImageFormat {
     }
 
     // Canon CR3 / ISOBMFF formats (ftypcrx, ftypavif, ftypheic)
-    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
-        let brand = &bytes[8..12];
-        if brand == b"crx " {
-            return ImageFormat::RawCanonCr3;
-        } else if brand == b"avif" || brand == b"avis" {
-            return ImageFormat::Avif;
-        } else if brand == b"heic" || brand == b"heix" || brand == b"mif1" || brand == b"msf1" {
-            return ImageFormat::Heif;
+    if bytes.get(4..8) == Some(b"ftyp") {
+        if let Some(brand) = bytes.get(8..12) {
+            if brand == b"crx " {
+                return ImageFormat::RawCanonCr3;
+            } else if brand == b"avif" || brand == b"avis" {
+                return ImageFormat::Avif;
+            } else if brand == b"heic" || brand == b"heix" || brand == b"mif1" || brand == b"msf1" {
+                return ImageFormat::Heif;
+            }
         }
     }
 
@@ -150,7 +157,7 @@ pub fn detect_format(bytes: &[u8]) -> ImageFormat {
     // TIFF and TIFF-based RAW (Canon CR2, Nikon NEF, Sony ARW, Olympus ORF, Panasonic RW2, DNG)
     if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") || bytes.starts_with(b"IIRO") || bytes.starts_with(b"IIRS") {
         // Canon CR2 has magic bytes at offset 8: 'CR\x02\x00'
-        if bytes.len() >= 12 && &bytes[8..12] == b"CR\x02\x00" {
+        if bytes.get(8..12) == Some(b"CR\x02\x00") {
             return ImageFormat::RawCanonCr2;
         }
         // Olympus ORF has magic at offset 2: 'IIRO'
@@ -158,11 +165,26 @@ pub fn detect_format(bytes: &[u8]) -> ImageFormat {
             return ImageFormat::RawOlympusOrf;
         }
         // Panasonic RW2 has magic at offset 8: 'IIU\0'
-        if bytes.len() >= 12 && &bytes[8..12] == b"IIU\0" {
+        if bytes.get(8..12) == Some(b"IIU\0") {
             return ImageFormat::RawPanasonicRw2;
         }
         // Default TIFF or other TIFF-derived RAW
         return ImageFormat::Tiff;
+    }
+
+    // QOI: "qoif"
+    if bytes.starts_with(b"qoif") {
+        return ImageFormat::Qoi;
+    }
+
+    // DirectDraw Surface: "DDS "
+    if bytes.starts_with(b"DDS ") {
+        return ImageFormat::Dds;
+    }
+
+    // PNM / Netpbm: 'P1' through 'P7'
+    if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'7').contains(&bytes[1]) {
+        return ImageFormat::Pnm;
     }
 
     // SVG: <?xml ... <svg or simply <svg
@@ -215,6 +237,9 @@ pub fn detect_format_with_path(bytes: &[u8], path: Option<&std::path::Path>) -> 
                     "svg" => return ImageFormat::Svg,
                     "ico" => return ImageFormat::Ico,
                     "tga" => return ImageFormat::Tga,
+                    "qoi" => return ImageFormat::Qoi,
+                    "dds" => return ImageFormat::Dds,
+                    "pnm" | "ppm" | "pgm" | "pbm" | "pam" => return ImageFormat::Pnm,
                     _ => {}
                 }
             }

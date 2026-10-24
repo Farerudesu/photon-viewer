@@ -112,8 +112,26 @@ fn main() {
 
     let window = Arc::new(window);
 
-    let mut app = pollster::block_on(App::new(window.clone(), initial_file))
-        .expect("Failed to initialize application");
+    let mut app = match pollster::block_on(App::new(window.clone(), initial_file)) {
+        Ok(app) => app,
+        Err(e) => {
+            log::error!("Initialization error: {}", e);
+            #[cfg(target_os = "windows")]
+            {
+                use std::ffi::OsStr;
+                use std::os::windows::ffi::OsStrExt;
+                let wide_title: Vec<u16> = OsStr::new("Photon Viewer - Graphics Adapter Error\0").encode_wide().collect();
+                let wide_msg: Vec<u16> = OsStr::new(&format!("{}\n\nPlease verify your graphics driver installation.", e)).encode_wide().chain(Some(0)).collect();
+                extern "system" {
+                    fn MessageBoxW(hWnd: isize, lpText: *const u16, lpCaption: *const u16, uType: u32) -> i32;
+                }
+                unsafe {
+                    MessageBoxW(0, wide_msg.as_ptr(), wide_title.as_ptr(), 0x00000010 /* MB_ICONERROR */);
+                }
+            }
+            std::process::exit(1);
+        }
+    };
 
     event_loop
         .run(move |event, target| match event {
@@ -147,6 +165,11 @@ fn main() {
             }
             Event::AboutToWait => {
                 app.update_animation();
+                if let Some(deadline) = app.animation_deadline() {
+                    target.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(deadline));
+                } else {
+                    target.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                }
             }
             _ => {}
         })
