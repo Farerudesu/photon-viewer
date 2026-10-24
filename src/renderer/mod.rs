@@ -457,9 +457,10 @@ impl RenderState {
             return;
         }
 
-        // Drop previous texture without synchronous GPU stall
+        // Drop previous texture and reclaim VRAM / staging buffers immediately
         if let Some(old_tex) = self.image_texture.take() {
             old_tex.destroy();
+            self.device.poll(wgpu::Maintain::Poll);
         }
 
         let format = if is_hdr {
@@ -470,11 +471,12 @@ impl RenderState {
 
         let bytes_per_pixel: u32 = if is_hdr { 8 } else { 4 };
 
-        // Anti-aliasing: generate mipmap levels for 8-bit images to eliminate moire at fit-to-window scale
-        let num_mips = if is_hdr || width < 64 || height < 64 {
+        // Anti-aliasing: 3 mip levels (1x, 0.5x, 0.25x) eliminates fit-to-window moire
+        // without consuming massive CPU time or bloating GPU memory
+        let num_mips = if is_hdr || width < 128 || height < 128 {
             1
         } else {
-            ((width.max(height) as f32).log2().floor() as u32 + 1).clamp(1, 5)
+            3
         };
 
         let size = wgpu::Extent3d {
@@ -511,11 +513,11 @@ impl RenderState {
             size,
         );
 
-        // Generate and upload mip levels 1..num_mips using 2x2 box filtering
+        // Generate and upload mip levels 1..num_mips using zero-copy 2x2 box filtering
         if num_mips > 1 {
             let mut prev_w = width;
             let mut prev_h = height;
-            let mut prev_data = rgba_pixels.to_vec();
+            let mut prev_box: Option<Vec<u8>> = None;
 
             for level in 1..num_mips {
                 let cur_w = (prev_w / 2).max(1);
@@ -524,6 +526,10 @@ impl RenderState {
 
                 let prev_stride = (prev_w * 4) as usize;
                 let cur_stride = (cur_w * 4) as usize;
+                let prev_src: &[u8] = match prev_box.as_ref() {
+                    Some(b) => b.as_slice(),
+                    None => rgba_pixels,
+                };
 
                 for y in 0..cur_h {
                     let py0 = (y * 2) as usize * prev_stride;
@@ -540,10 +546,10 @@ impl RenderState {
                         let i11 = py1 + px1;
 
                         let dst = dst_row + x as usize * 4;
-                        cur_data[dst] = ((prev_data[i00] as u32 + prev_data[i10] as u32 + prev_data[i01] as u32 + prev_data[i11] as u32) / 4) as u8;
-                        cur_data[dst + 1] = ((prev_data[i00 + 1] as u32 + prev_data[i10 + 1] as u32 + prev_data[i01 + 1] as u32 + prev_data[i11 + 1] as u32) / 4) as u8;
-                        cur_data[dst + 2] = ((prev_data[i00 + 2] as u32 + prev_data[i10 + 2] as u32 + prev_data[i01 + 2] as u32 + prev_data[i11 + 2] as u32) / 4) as u8;
-                        cur_data[dst + 3] = ((prev_data[i00 + 3] as u32 + prev_data[i10 + 3] as u32 + prev_data[i01 + 3] as u32 + prev_data[i11 + 3] as u32) / 4) as u8;
+                        cur_data[dst] = ((prev_src[i00] as u32 + prev_src[i10] as u32 + prev_src[i01] as u32 + prev_src[i11] as u32) / 4) as u8;
+                        cur_data[dst + 1] = ((prev_src[i00 + 1] as u32 + prev_src[i10 + 1] as u32 + prev_src[i01 + 1] as u32 + prev_src[i11 + 1] as u32) / 4) as u8;
+                        cur_data[dst + 2] = ((prev_src[i00 + 2] as u32 + prev_src[i10 + 2] as u32 + prev_src[i01 + 2] as u32 + prev_src[i11 + 2] as u32) / 4) as u8;
+                        cur_data[dst + 3] = ((prev_src[i00 + 3] as u32 + prev_src[i10 + 3] as u32 + prev_src[i01 + 3] as u32 + prev_src[i11 + 3] as u32) / 4) as u8;
                     }
                 }
 
@@ -571,7 +577,7 @@ impl RenderState {
 
                 prev_w = cur_w;
                 prev_h = cur_h;
-                prev_data = cur_data;
+                prev_box = Some(cur_data);
             }
         }
 

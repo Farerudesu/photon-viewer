@@ -73,6 +73,9 @@ pub struct App {
 
     // Navigation debounce for rapid arrow skipping
     pending_path: Option<PathBuf>,
+
+    // Active RAW background demosaic cancellation token
+    raw_cancel: Arc<AtomicBool>,
 }
 
 #[cfg(target_os = "windows")]
@@ -121,8 +124,10 @@ impl App {
         let render_state = RenderState::new(window).await?;
 
         let ram = get_system_ram_bytes();
-        let cache_bytes = ((ram / 4) as usize).clamp(256 * 1024 * 1024, 2 * 1024 * 1024 * 1024);
-        let prefetch_radius = if ram >= 12 * 1024 * 1024 * 1024 { 2 } else { 1 };
+        // Safe memory bounding: clamp cache between 128 MB and 512 MB to prevent OS thrashing,
+        // pagefile swapping, and driver out-of-memory crashes on high-res photos
+        let cache_bytes = ((ram / 8) as usize).clamp(128 * 1024 * 1024, 512 * 1024 * 1024);
+        let prefetch_radius = 1;
         log::info!("System RAM: {} MB, SharedCache: {} MB, Prefetch radius: {}", ram / 1024 / 1024, cache_bytes / 1024 / 1024, prefetch_radius);
 
         let cache = Arc::new(SharedCache::new(cache_bytes));
@@ -171,6 +176,7 @@ impl App {
             last_interaction: Instant::now(),
             prefetch_radius,
             pending_path: None,
+            raw_cancel: Arc::new(AtomicBool::new(false)),
         };
 
         if let Some(path) = initial_file {
@@ -206,6 +212,11 @@ impl App {
         log::info!("Displaying file: {:?}", path);
         self.current_animation = None;
         self.anim_frame_idx = 0;
+
+        // Cancel any pending heavy RAW demosaic tasks immediately
+        self.raw_cancel.store(true, Ordering::SeqCst);
+        let new_raw_cancel = Arc::new(AtomicBool::new(false));
+        self.raw_cancel = new_raw_cancel.clone();
 
         // Fast path: Check if already in LRU cache
         if let Some(cached) = self.cache.get(path) {
@@ -297,11 +308,21 @@ impl App {
                             }
 
                             if is_preview {
+                                let cancel = new_raw_cancel.clone();
                                 let tx = self.raw_channel_tx.clone();
                                 let raw_path = path.to_path_buf();
                                 rayon::spawn(move || {
+                                    if cancel.load(Ordering::Relaxed) {
+                                        return;
+                                    }
                                     if let Ok(f) = LoadedFile::open(&raw_path) {
+                                        if cancel.load(Ordering::Relaxed) {
+                                            return;
+                                        }
                                         if let Ok(full) = crate::codec::raw::decode_full_raw(&f.mmap) {
+                                            if cancel.load(Ordering::Relaxed) {
+                                                return;
+                                            }
                                             let _ = tx.send((raw_path, Arc::new(full)));
                                         }
                                     }
@@ -450,6 +471,7 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Unknown".to_string());
 
+            self.raw_cancel.store(true, Ordering::SeqCst);
             if self.cache.get(&path).is_some() {
                 self.pending_path = None;
                 self.display_image_path(&path);
@@ -475,6 +497,7 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Unknown".to_string());
 
+            self.raw_cancel.store(true, Ordering::SeqCst);
             if self.cache.get(&path).is_some() {
                 self.pending_path = None;
                 self.display_image_path(&path);
@@ -497,6 +520,7 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Unknown".to_string());
 
+            self.raw_cancel.store(true, Ordering::SeqCst);
             if self.cache.get(&path).is_some() {
                 self.pending_path = None;
                 self.display_image_path(&path);
@@ -519,6 +543,7 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Unknown".to_string());
 
+            self.raw_cancel.store(true, Ordering::SeqCst);
             if self.cache.get(&path).is_some() {
                 self.pending_path = None;
                 self.display_image_path(&path);
