@@ -99,6 +99,13 @@ impl TileManager {
             }
             self.pending_keys.remove(&tile.key);
 
+            if tile.width == 0
+                || tile.height == 0
+                || tile.rgba.len() < (tile.width as usize * tile.height as usize * 4)
+            {
+                continue;
+            }
+
             let size = wgpu::Extent3d {
                 width: tile.width,
                 height: tile.height,

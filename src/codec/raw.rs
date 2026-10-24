@@ -128,6 +128,8 @@ fn extract_tiff_jpeg_candidates(data: &[u8]) -> Vec<(usize, usize)> {
 
         let mut jpeg_offset = None;
         let mut jpeg_len = None;
+        let mut strip_offset = None;
+        let mut strip_len = None;
 
         for _ in 0..num_entries {
             if entry_pos + 12 > data.len() {
@@ -152,6 +154,59 @@ fn extract_tiff_jpeg_candidates(data: &[u8]) -> Vec<(usize, usize)> {
             } else if tag == 0x0202 {
                 // JPEGInterchangeFormatLength
                 jpeg_len = Some(val);
+            } else if tag == 0x0111 && count == 1 {
+                if val + 2 <= data.len() && data[val] == 0xFF && data[val + 1] == 0xD8 {
+                    strip_offset = Some(val);
+                }
+            } else if tag == 0x0117 && count == 1 {
+                strip_len = Some(val);
+            } else if tag == 0x8769 {
+                // EXIF IFD pointer: check for Nikon MakerNote (0x927C)
+                let exif_pos = val;
+                if exif_pos > 0 && exif_pos + 2 <= data.len() {
+                    if let Some(exif_entries) = read_u16(data, exif_pos) {
+                        let mut ep = exif_pos + 2;
+                        for _ in 0..exif_entries as usize {
+                            if ep + 12 > data.len() {
+                                break;
+                            }
+                            let etag = read_u16(data, ep).unwrap_or(0);
+                            let eval = read_u32(data, ep + 8).unwrap_or(0) as usize;
+                            if etag == 0x927C {
+                                let mn_base = eval;
+                                if mn_base + 12 <= data.len()
+                                    && data[mn_base..].starts_with(b"Nikon\0\x02")
+                                {
+                                    let mn_ifd = mn_base + 10;
+                                    if let Some(mn_count) = read_u16(data, mn_ifd) {
+                                        let mut mp = mn_ifd + 2;
+                                        let mut mn_off = None;
+                                        let mut mn_len = None;
+                                        for _ in 0..mn_count as usize {
+                                            if mp + 12 > data.len() {
+                                                break;
+                                            }
+                                            let mtag = read_u16(data, mp).unwrap_or(0);
+                                            let mval = read_u32(data, mp + 8).unwrap_or(0) as usize;
+                                            if mtag == 0x0011 {
+                                                mn_off = Some(mn_base + 10 + mval);
+                                            } else if mtag == 0x0012 {
+                                                mn_len = Some(mval);
+                                            }
+                                            mp += 12;
+                                        }
+                                        if let (Some(o), Some(l)) = (mn_off, mn_len) {
+                                            if o + l <= data.len() && l > 1024 {
+                                                candidates.push((o, l));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ep += 12;
+                        }
+                    }
+                }
             } else if tag == 0x014A {
                 // SubIFDs tag (contains array of offsets to child IFDs)
                 for s in 0..count.min(16) {
@@ -199,6 +254,11 @@ fn extract_tiff_jpeg_candidates(data: &[u8]) -> Vec<(usize, usize)> {
                 candidates.push((off, len));
             }
         }
+        if let (Some(off), Some(len)) = (strip_offset, strip_len) {
+            if off + len <= data.len() && len > 64 {
+                candidates.push((off, len));
+            }
+        }
 
         // Next IFD offset is right after entries
         if entry_pos + 4 <= data.len() {
@@ -223,12 +283,21 @@ fn find_jpeg_stream_candidates(data: &[u8]) -> Vec<(usize, usize)> {
     while i + 3 < len {
         if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
             let start_idx = i;
-            let mut j = start_idx + 4;
+            let mut j = start_idx + 2;
+            let mut past_sos = false;
             let mut found_eoi = None;
+
             while j + 1 < len {
+                if !past_sos && data[j] == 0xFF && data[j + 1] == 0xDA {
+                    past_sos = true;
+                    j += 2;
+                    continue;
+                }
                 if data[j] == 0xFF && data[j + 1] == 0xD9 {
                     found_eoi = Some(j + 2);
-                    break;
+                    if past_sos {
+                        break;
+                    }
                 }
                 j += 1;
             }
@@ -286,10 +355,22 @@ pub fn decode_full_raw(data: &[u8]) -> Result<DecodedImage, String> {
 fn demosaic_bayer_parallel(raw: &rawloader::RawImage, pixels: &[u16], out_rgba: &mut [u8]) {
     let width = raw.width;
     let height = raw.height;
+    if width == 0 || height == 0 {
+        return;
+    }
 
     let black = raw.blacklevels[0] as f32;
-    let white = (raw.whitelevels[0].max(raw.blacklevels[0] + 1)) as f32;
-    let inv_range = 1.0 / (white - black);
+    let mut white = raw.whitelevels[0] as f32;
+    if white <= black + 10.0 {
+        // Fallback: estimate white level from max sample in sensor or default to 14-bit (16383)
+        let sample_max = pixels.iter().take(100_000).copied().max().unwrap_or(16383) as f32;
+        white = if sample_max > black + 10.0 {
+            sample_max
+        } else {
+            16383.0
+        };
+    }
+    let inv_range = 1.0 / (white - black).max(1.0);
 
     // Camera white-balance multipliers (normalized relative to green channel)
     let (wb_r, wb_g, wb_b) = if raw.wb_coeffs[1] > 0.0 && !raw.wb_coeffs[1].is_nan() {
@@ -325,7 +406,8 @@ fn demosaic_bayer_parallel(raw: &rawloader::RawImage, pixels: &[u16], out_rgba: 
                 + xyz_to_srgb[i][2] * cam_to_xyz[2][j];
         }
     }
-    let has_matrix = matrix[0][0] != 0.0 || matrix[0][1] != 0.0;
+    let has_matrix = matrix.iter().flatten().all(|v| !v.is_nan() && v.is_finite())
+        && (matrix[0][0] != 0.0 || matrix[0][1] != 0.0);
 
     // Parallelize per scanline
     out_rgba
@@ -443,13 +525,17 @@ fn get_pixel_normalized(
     black: f32,
     inv_range: f32,
 ) -> f32 {
-    let raw_val = pixels[y * width + x] as f32;
+    let idx = y * width + x;
+    let raw_val = pixels.get(idx).copied().unwrap_or(0) as f32;
     ((raw_val - black) * inv_range).clamp(0.0, 1.0)
 }
 
 #[inline(always)]
 fn to_srgb_u8(linear: f32) -> u8 {
-    let clamped = linear.clamp(0.0, 1.0);
+    if linear.is_nan() || linear <= 0.0 {
+        return 0;
+    }
+    let clamped = linear.min(1.0);
     // Standard IEC 61966-2-1 piecewise sRGB transfer function
     let srgb = if clamped <= 0.0031308 {
         12.92 * clamped
@@ -461,13 +547,16 @@ fn to_srgb_u8(linear: f32) -> u8 {
 
 fn demosaic_float_parallel(raw: &rawloader::RawImage, pixels: &[f32], out_rgba: &mut [u8]) {
     let width = raw.width;
+    if width == 0 {
+        return;
+    }
 
     out_rgba
         .par_chunks_exact_mut(width * 4)
         .enumerate()
         .for_each(|(y, row_bytes)| {
             for x in 0..width {
-                let val = pixels[y * width + x];
+                let val = pixels.get(y * width + x).copied().unwrap_or(0.0);
                 let srgb = to_srgb_u8(val);
                 let pixel_idx = x * 4;
                 row_bytes[pixel_idx] = srgb;

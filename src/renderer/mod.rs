@@ -461,6 +461,27 @@ impl RenderState {
             return;
         }
 
+        if width > self.max_texture_dimension_2d || height > self.max_texture_dimension_2d {
+            log::warn!(
+                "upload_image: dimensions {}x{} exceed GPU max limit {}",
+                width,
+                height,
+                self.max_texture_dimension_2d
+            );
+            return;
+        }
+
+        let bytes_per_pixel: u32 = if is_hdr { 8 } else { 4 };
+        let expected_bytes = (width as usize) * (height as usize) * (bytes_per_pixel as usize);
+        if rgba_pixels.len() < expected_bytes {
+            log::warn!(
+                "upload_image: buffer length {} is smaller than expected {}",
+                rgba_pixels.len(),
+                expected_bytes
+            );
+            return;
+        }
+
         // Drop previous texture and reclaim VRAM / staging buffers immediately
         if let Some(old_tex) = self.image_texture.take() {
             old_tex.destroy();
@@ -472,8 +493,6 @@ impl RenderState {
         } else {
             wgpu::TextureFormat::Rgba8UnormSrgb
         };
-
-        let bytes_per_pixel: u32 = if is_hdr { 8 } else { 4 };
 
         // Anti-aliasing: 3 mip levels (1x, 0.5x, 0.25x) eliminates fit-to-window moire
         // without consuming massive CPU time or bloating GPU memory
@@ -534,6 +553,7 @@ impl RenderState {
                     Some(b) => b.as_slice(),
                     None => rgba_pixels,
                 };
+                let prev_len = prev_src.len();
 
                 for y in 0..cur_h {
                     let py0 = (y * 2) as usize * prev_stride;
@@ -550,10 +570,20 @@ impl RenderState {
                         let i11 = py1 + px1;
 
                         let dst = dst_row + x as usize * 4;
-                        cur_data[dst] = ((prev_src[i00] as u32 + prev_src[i10] as u32 + prev_src[i01] as u32 + prev_src[i11] as u32) / 4) as u8;
-                        cur_data[dst + 1] = ((prev_src[i00 + 1] as u32 + prev_src[i10 + 1] as u32 + prev_src[i01 + 1] as u32 + prev_src[i11 + 1] as u32) / 4) as u8;
-                        cur_data[dst + 2] = ((prev_src[i00 + 2] as u32 + prev_src[i10 + 2] as u32 + prev_src[i01 + 2] as u32 + prev_src[i11 + 2] as u32) / 4) as u8;
-                        cur_data[dst + 3] = ((prev_src[i00 + 3] as u32 + prev_src[i10 + 3] as u32 + prev_src[i01 + 3] as u32 + prev_src[i11 + 3] as u32) / 4) as u8;
+                        if i11 + 3 < prev_len && dst + 3 < cur_data.len() {
+                            cur_data[dst] = ((prev_src[i00] as u32 + prev_src[i10] as u32 + prev_src[i01] as u32 + prev_src[i11] as u32) / 4) as u8;
+                            cur_data[dst + 1] = ((prev_src[i00 + 1] as u32 + prev_src[i10 + 1] as u32 + prev_src[i01 + 1] as u32 + prev_src[i11 + 1] as u32) / 4) as u8;
+                            cur_data[dst + 2] = ((prev_src[i00 + 2] as u32 + prev_src[i10 + 2] as u32 + prev_src[i01 + 2] as u32 + prev_src[i11 + 2] as u32) / 4) as u8;
+                            cur_data[dst + 3] = ((prev_src[i00 + 3] as u32 + prev_src[i10 + 3] as u32 + prev_src[i01 + 3] as u32 + prev_src[i11 + 3] as u32) / 4) as u8;
+                        } else if dst + 3 < cur_data.len() {
+                            let get_px = |idx: usize, ch: usize| -> u32 {
+                                prev_src.get(idx + ch).copied().unwrap_or(0) as u32
+                            };
+                            cur_data[dst] = ((get_px(i00, 0) + get_px(i10, 0) + get_px(i01, 0) + get_px(i11, 0)) / 4) as u8;
+                            cur_data[dst + 1] = ((get_px(i00, 1) + get_px(i10, 1) + get_px(i01, 1) + get_px(i11, 1)) / 4) as u8;
+                            cur_data[dst + 2] = ((get_px(i00, 2) + get_px(i10, 2) + get_px(i01, 2) + get_px(i11, 2)) / 4) as u8;
+                            cur_data[dst + 3] = ((get_px(i00, 3) + get_px(i10, 3) + get_px(i01, 3) + get_px(i11, 3)) / 4) as u8;
+                        }
                     }
                 }
 
@@ -632,6 +662,10 @@ impl RenderState {
         tiles_to_render: &[(&wgpu::BindGroup, f32, f32, f32, f32)],
         hud_vertices: &[HudVertex],
     ) -> Result<(), wgpu::SurfaceError> {
+        if self.size.width == 0 || self.size.height == 0 {
+            return Ok(());
+        }
+
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture

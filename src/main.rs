@@ -28,6 +28,54 @@ extern "system" {
 const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
 
 fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = match info.payload().downcast_ref::<&'static str>() {
+            Some(s) => *s,
+            None => match info.payload().downcast_ref::<String>() {
+                Some(s) => &**s,
+                None => "Box<dyn Any>",
+            },
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        let report = format!(
+            "Photon Viewer encountered an unexpected error:\n\nPanic: {}\nLocation: {}\n\nA diagnostic log has been written to photon_crash.log.",
+            msg, location
+        );
+        eprintln!("{}", report);
+
+        if let Ok(mut f) = std::fs::File::create("photon_crash.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "Crash timestamp: {:?}", std::time::SystemTime::now());
+            let _ = writeln!(f, "{}", report);
+        }
+        if let Ok(temp) = std::env::var("TEMP") {
+            let temp_log = std::path::PathBuf::from(temp).join("photon_crash.log");
+            if let Ok(mut f) = std::fs::File::create(temp_log) {
+                use std::io::Write;
+                let _ = writeln!(f, "Crash timestamp: {:?}", std::time::SystemTime::now());
+                let _ = writeln!(f, "{}", report);
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            let wide_title: Vec<u16> = OsStr::new("Photon Viewer - Fatal Error\0").encode_wide().collect();
+            let wide_msg: Vec<u16> = OsStr::new(&report).encode_wide().chain(Some(0)).collect();
+            extern "system" {
+                fn MessageBoxW(hWnd: isize, lpText: *const u16, lpCaption: *const u16, uType: u32) -> i32;
+            }
+            unsafe {
+                MessageBoxW(0, wide_msg.as_ptr(), wide_title.as_ptr(), 0x00000010 /* MB_ICONERROR */);
+            }
+        }
+    }));
+
     let args: Vec<String> = env::args().collect();
 
     // Headless verification and benchmark mode:

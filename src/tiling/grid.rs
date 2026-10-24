@@ -61,20 +61,28 @@ impl TileGrid {
         let x1 = ((key.col + 1) * self.tile_size).min(self.full_width);
         let y1 = ((key.row + 1) * self.tile_size).min(self.full_height);
 
-        let tile_w = x1 - x0;
-        let tile_h = y1 - y0;
+        let tile_w = x1.saturating_sub(x0);
+        let tile_h = y1.saturating_sub(y0);
+        if tile_w == 0 || tile_h == 0 {
+            return None;
+        }
 
         let mut rgba = vec![0u8; (tile_w * tile_h * 4) as usize];
         let full_stride = (self.full_width * 4) as usize;
         let tile_stride = (tile_w * 4) as usize;
+        let src_len = self.source_pixels.len();
 
         for ty in 0..tile_h {
             let src_y = (y0 + ty) as usize;
             let src_offset = src_y * full_stride + (x0 * 4) as usize;
             let dst_offset = (ty as usize) * tile_stride;
 
-            rgba[dst_offset..dst_offset + tile_stride]
-                .copy_from_slice(&self.source_pixels[src_offset..src_offset + tile_stride]);
+            if src_offset < src_len && dst_offset < rgba.len() {
+                let avail = (src_len - src_offset).min(tile_stride);
+                let copy_len = avail.min(rgba.len() - dst_offset);
+                rgba[dst_offset..dst_offset + copy_len]
+                    .copy_from_slice(&self.source_pixels[src_offset..src_offset + copy_len]);
+            }
         }
 
         let u0 = x0 as f32 / self.full_width as f32;
@@ -97,14 +105,26 @@ impl TileGrid {
 
 /// Creates a downsampled base overview proxy fitting within max_dimension using box averaging
 fn create_overview(full_w: u32, full_h: u32, pixels: &[u8], max_dim: u32) -> DecodedImage {
+    if full_w == 0 || full_h == 0 {
+        return DecodedImage {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255],
+            decode_duration_us: 0,
+            orientation: 1,
+            is_hdr: false,
+        };
+    }
+
     let scale = ((full_w.max(full_h) + max_dim - 1) / max_dim).max(1);
 
-    let out_w = full_w / scale;
-    let out_h = full_h / scale;
+    let out_w = (full_w / scale).max(1);
+    let out_h = (full_h / scale).max(1);
 
     let mut out_rgba = vec![0u8; (out_w * out_h * 4) as usize];
     let full_stride = (full_w * 4) as usize;
     let out_stride = (out_w * 4) as usize;
+    let pixels_len = pixels.len();
 
     out_rgba
         .par_chunks_exact_mut(out_stride)
@@ -129,18 +149,27 @@ fn create_overview(full_w: u32, full_h: u32, pixels: &[u8], max_dim: u32) -> Dec
                     let row_start = (sy as usize) * full_stride;
                     for sx in sx_start..sx_end {
                         let idx = row_start + (sx as usize) * 4;
-                        sum_r += pixels[idx] as u64;
-                        sum_g += pixels[idx + 1] as u64;
-                        sum_b += pixels[idx + 2] as u64;
-                        sum_a += pixels[idx + 3] as u64;
+                        if idx + 3 < pixels_len {
+                            sum_r += pixels[idx] as u64;
+                            sum_g += pixels[idx + 1] as u64;
+                            sum_b += pixels[idx + 2] as u64;
+                            sum_a += pixels[idx + 3] as u64;
+                        } else {
+                            sum_r += pixels.get(idx).copied().unwrap_or(0) as u64;
+                            sum_g += pixels.get(idx + 1).copied().unwrap_or(0) as u64;
+                            sum_b += pixels.get(idx + 2).copied().unwrap_or(0) as u64;
+                            sum_a += pixels.get(idx + 3).copied().unwrap_or(255) as u64;
+                        }
                     }
                 }
 
                 let dst_idx = (ox * 4) as usize;
-                row[dst_idx] = (sum_r / count) as u8;
-                row[dst_idx + 1] = (sum_g / count) as u8;
-                row[dst_idx + 2] = (sum_b / count) as u8;
-                row[dst_idx + 3] = (sum_a / count) as u8;
+                if dst_idx + 3 < row.len() {
+                    row[dst_idx] = (sum_r / count) as u8;
+                    row[dst_idx + 1] = (sum_g / count) as u8;
+                    row[dst_idx + 2] = (sum_b / count) as u8;
+                    row[dst_idx + 3] = (sum_a / count) as u8;
+                }
             }
         });
 
