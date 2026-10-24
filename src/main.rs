@@ -9,6 +9,7 @@ mod ipc;
 mod pipeline;
 mod renderer;
 mod tiling;
+mod config;
 
 use app::App;
 use codec::LoadedFile;

@@ -6,3 +6,4 @@ pub mod hud;
 pub mod pipeline;
 pub mod renderer;
 pub mod tiling;
+pub mod config;

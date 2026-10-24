@@ -206,6 +206,40 @@ impl LruMemoryCache {
         }
     }
 
+    pub fn remove(&mut self, path: &Path) -> Option<Arc<DecodedImage>> {
+        if let Some(index) = self.map.remove(path) {
+            let (prev, next, size, image) = match self.entries.get(index).and_then(|e| e.as_ref()) {
+                Some(entry) => (entry.prev, entry.next, entry.size_bytes, entry.image.clone()),
+                None => return None,
+            };
+
+            // Unlink
+            if let Some(p) = prev {
+                if let Some(Some(entry)) = self.entries.get_mut(p) {
+                    entry.next = next;
+                }
+            } else {
+                self.head = next;
+            }
+            if let Some(n) = next {
+                if let Some(Some(entry)) = self.entries.get_mut(n) {
+                    entry.prev = prev;
+                }
+            } else {
+                self.tail = prev;
+            }
+
+            self.current_bytes = self.current_bytes.saturating_sub(size);
+            if let Some(entry_slot) = self.entries.get_mut(index) {
+                *entry_slot = None;
+            }
+            self.free_slots.push(index);
+            Some(image)
+        } else {
+            None
+        }
+    }
+
     pub fn current_bytes(&self) -> usize {
         self.current_bytes
     }
@@ -236,6 +270,10 @@ impl SharedCache {
 
     pub fn insert(&self, path: PathBuf, image: Arc<DecodedImage>) {
         self.inner.lock().insert(path, image);
+    }
+
+    pub fn remove(&self, path: &Path) -> Option<Arc<DecodedImage>> {
+        self.inner.lock().remove(path)
     }
 
     pub fn stats(&self) -> (usize, usize, usize, u64, u64) {

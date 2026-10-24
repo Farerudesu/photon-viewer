@@ -291,7 +291,159 @@ impl HudBuilder {
         );
     }
 
+    pub fn get_delete_dialog_rects(screen_w: f32, screen_h: f32) -> DeleteDialogRects {
+        let dialog_w = 480.0f32;
+        let dialog_h = 210.0f32;
+        let dialog_x = ((screen_w - dialog_w) * 0.5).max(10.0);
+        let dialog_y = ((screen_h - dialog_h) * 0.5).max(10.0);
+
+        let cb_x = dialog_x + 24.0;
+        let cb_y = dialog_y + 116.0;
+        let cb_w = 260.0;
+        let cb_h = 24.0;
+
+        let btn_y = dialog_y + 154.0;
+        let btn_h = 38.0;
+        let btn_w = 150.0;
+        let del_x = dialog_x + 24.0;
+        let cancel_x = dialog_x + dialog_w - 24.0 - btn_w;
+
+        DeleteDialogRects {
+            dialog: (dialog_x, dialog_y, dialog_w, dialog_h),
+            delete_btn: (del_x, btn_y, btn_w, btn_h),
+            cancel_btn: (cancel_x, btn_y, btn_w, btn_h),
+            checkbox: (cb_x, cb_y, cb_w, cb_h),
+        }
+    }
+
+    pub fn add_delete_confirmation_dialog(
+        &mut self,
+        screen_w: f32,
+        screen_h: f32,
+        filename: &str,
+        dont_ask_again: bool,
+        hover_delete: bool,
+        hover_cancel: bool,
+        hover_checkbox: bool,
+    ) {
+        let rects = Self::get_delete_dialog_rects(screen_w, screen_h);
+        let (dx, dy, dw, dh) = rects.dialog;
+
+        // Dark dim backdrop over entire viewport
+        self.add_rect(0.0, 0.0, screen_w, screen_h, [0.0, 0.0, 0.0, 0.65]);
+
+        // Dialog background
+        self.add_rect(dx, dy, dw, dh, [0.08, 0.09, 0.12, 0.96]);
+        // Borders
+        self.add_rect(dx, dy, dw, 1.0, [0.35, 0.40, 0.50, 0.75]);
+        self.add_rect(dx, dy + dh - 1.0, dw, 1.0, [0.18, 0.20, 0.26, 0.85]);
+        self.add_rect(dx, dy, 1.0, dh, [0.25, 0.30, 0.38, 0.50]);
+        self.add_rect(dx + dw - 1.0, dy, 1.0, dh, [0.25, 0.30, 0.38, 0.50]);
+
+        // Red danger accent stripe on left edge
+        self.add_rect(dx, dy, 5.0, dh, [0.95, 0.25, 0.25, 1.0]);
+
+        // Header Title
+        self.add_text(dx + 24.0, dy + 18.0, "DELETE FILE", 2.2, [0.98, 0.35, 0.35, 1.0]);
+
+        // Prompt question
+        self.add_text(
+            dx + 24.0,
+            dy + 50.0,
+            "Move this file to the Recycle Bin?",
+            1.7,
+            [0.90, 0.92, 0.96, 1.0],
+        );
+
+        // Filename display capsule
+        let cap_x = dx + 24.0;
+        let cap_y = dy + 76.0;
+        let cap_w = dw - 48.0;
+        let cap_h = 28.0;
+        self.add_rect(cap_x, cap_y, cap_w, cap_h, [0.12, 0.14, 0.18, 0.9]);
+        self.add_rect(cap_x, cap_y, 2.0, cap_h, [0.30, 0.75, 1.00, 1.0]);
+
+        let max_chars = 34;
+        let trunc_name = if filename.len() > max_chars {
+            format!("{}...{}", &filename[..16], &filename[filename.len() - 14..])
+        } else {
+            filename.to_string()
+        };
+        self.add_text(cap_x + 10.0, cap_y + 8.0, &trunc_name, 1.6, [0.35, 0.85, 1.00, 1.0]);
+
+        // Checkbox row
+        let (cb_x, cb_y, _, _) = rects.checkbox;
+        let cb_box_size = 18.0;
+
+        let cb_box_bg = if hover_checkbox {
+            [0.20, 0.23, 0.30, 1.0]
+        } else {
+            [0.14, 0.16, 0.22, 1.0]
+        };
+        self.add_rect(cb_x, cb_y + 2.0, cb_box_size, cb_box_size, cb_box_bg);
+        self.add_rect(cb_x, cb_y + 2.0, cb_box_size, 1.0, [0.45, 0.50, 0.60, 0.8]);
+        self.add_rect(cb_x, cb_y + 2.0 + cb_box_size - 1.0, cb_box_size, 1.0, [0.45, 0.50, 0.60, 0.8]);
+        self.add_rect(cb_x, cb_y + 2.0, 1.0, cb_box_size, [0.45, 0.50, 0.60, 0.8]);
+        self.add_rect(cb_x + cb_box_size - 1.0, cb_y + 2.0, 1.0, cb_box_size, [0.45, 0.50, 0.60, 0.8]);
+
+        if dont_ask_again {
+            self.add_rect(cb_x + 3.0, cb_y + 5.0, cb_box_size - 6.0, cb_box_size - 6.0, [0.20, 0.85, 0.50, 1.0]);
+            self.add_text(cb_x + 4.0, cb_y + 5.0, "x", 1.4, [0.05, 0.10, 0.05, 1.0]);
+        }
+
+        let label_color = if hover_checkbox {
+            [1.0, 1.0, 1.0, 1.0]
+        } else {
+            [0.85, 0.88, 0.94, 1.0]
+        };
+        self.add_text(cb_x + cb_box_size + 10.0, cb_y + 4.0, "Don't ask me again", 1.6, label_color);
+
+        // Delete button
+        let (del_x, del_y, del_w, del_h) = rects.delete_btn;
+        let del_bg = if hover_delete {
+            [0.98, 0.28, 0.32, 1.0]
+        } else {
+            [0.85, 0.20, 0.25, 0.95]
+        };
+        self.add_rect(del_x, del_y, del_w, del_h, del_bg);
+        self.add_rect(del_x, del_y, del_w, 1.0, [1.0, 0.45, 0.45, 0.8]);
+        self.add_text(del_x + 14.0, del_y + 11.0, "Delete (Enter)", 1.6, [1.0, 1.0, 1.0, 1.0]);
+
+        // Cancel button
+        let (can_x, can_y, can_w, can_h) = rects.cancel_btn;
+        let can_bg = if hover_cancel {
+            [0.28, 0.32, 0.40, 1.0]
+        } else {
+            [0.18, 0.20, 0.26, 0.9]
+        };
+        self.add_rect(can_x, can_y, can_w, can_h, can_bg);
+        self.add_rect(can_x, can_y, can_w, 1.0, [0.40, 0.45, 0.55, 0.7]);
+        self.add_text(can_x + 22.0, can_y + 11.0, "Cancel (Esc)", 1.6, [0.88, 0.90, 0.95, 1.0]);
+    }
+
+    pub fn add_toast_notification(&mut self, screen_w: f32, screen_h: f32, msg: &str) {
+        let toast_h = 32.0;
+        let text_scale = 1.6;
+        let char_w = 5.0 * text_scale + 2.0 * text_scale;
+        let toast_w = (msg.len() as f32 * char_w + 36.0).max(240.0);
+        let toast_x = ((screen_w - toast_w) * 0.5).max(10.0);
+        let toast_y = (screen_h - toast_h - 24.0).max(10.0);
+
+        self.add_rect(toast_x, toast_y, toast_w, toast_h, [0.08, 0.10, 0.14, 0.94]);
+        self.add_rect(toast_x, toast_y, toast_w, 1.0, [0.35, 0.40, 0.50, 0.65]);
+        self.add_rect(toast_x, toast_y, 4.0, toast_h, [0.20, 0.85, 0.50, 1.0]); // Vibrant green
+        self.add_text(toast_x + 16.0, toast_y + 8.0, msg, text_scale, [0.94, 0.96, 0.98, 1.0]);
+    }
+
     pub fn finish(self) -> Vec<HudVertex> {
         self.vertices
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DeleteDialogRects {
+    pub dialog: (f32, f32, f32, f32),
+    pub delete_btn: (f32, f32, f32, f32),
+    pub cancel_btn: (f32, f32, f32, f32),
+    pub checkbox: (f32, f32, f32, f32),
 }

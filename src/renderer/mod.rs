@@ -646,6 +646,16 @@ impl RenderState {
         self.image_height = height;
     }
 
+    pub fn clear_image(&mut self) {
+        if let Some(old_tex) = self.image_texture.take() {
+            old_tex.destroy();
+            self.device.poll(wgpu::Maintain::Poll);
+        }
+        self.image_bind_group = None;
+        self.image_width = 0;
+        self.image_height = 0;
+    }
+
     pub fn render(
         &mut self,
         zoom: f32,

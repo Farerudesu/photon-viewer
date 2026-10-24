@@ -76,6 +76,13 @@ pub struct App {
 
     // Active RAW background demosaic cancellation token
     raw_cancel: Arc<AtomicBool>,
+
+    // Delete dialog & notification state
+    pub confirm_delete: bool,
+    pub is_delete_dialog_open: bool,
+    pub delete_dont_ask_again: bool,
+    pub toast_message: Option<String>,
+    pub toast_time: Instant,
 }
 
 #[cfg(target_os = "windows")]
@@ -178,6 +185,11 @@ impl App {
             prefetch_radius,
             pending_path: None,
             raw_cancel: Arc::new(AtomicBool::new(false)),
+            confirm_delete: crate::config::load_confirm_delete(),
+            is_delete_dialog_open: false,
+            delete_dont_ask_again: false,
+            toast_message: None,
+            toast_time: Instant::now(),
         };
 
         if let Some(path) = initial_file {
@@ -440,23 +452,47 @@ impl App {
                 self.render_state.window.request_redraw();
             }
         }
+
+        if self.toast_message.is_some() && self.toast_time.elapsed().as_secs_f32() >= 2.5 {
+            self.toast_message = None;
+            self.render_state.window.request_redraw();
+        }
     }
 
     pub fn animation_deadline(&self) -> Option<std::time::Instant> {
-        if let Some(ref anim) = self.current_animation {
+        let anim_deadline = if let Some(ref anim) = self.current_animation {
             if anim.frames.is_empty() {
-                return None;
-            }
-            let current_frame = &anim.frames[self.anim_frame_idx];
-            let elapsed = self.last_frame_time.elapsed();
-            let delay = std::time::Duration::from_millis(current_frame.delay_ms.max(10) as u64);
-            if elapsed >= delay {
-                Some(Instant::now())
+                None
             } else {
-                Some(self.last_frame_time + delay)
+                let current_frame = &anim.frames[self.anim_frame_idx];
+                let elapsed = self.last_frame_time.elapsed();
+                let delay = std::time::Duration::from_millis(current_frame.delay_ms.max(10) as u64);
+                if elapsed >= delay {
+                    Some(Instant::now())
+                } else {
+                    Some(self.last_frame_time + delay)
+                }
             }
         } else {
             None
+        };
+
+        let toast_deadline = if self.toast_message.is_some() {
+            let elapsed = self.toast_time.elapsed();
+            if elapsed < Duration::from_millis(2500) {
+                Some(self.toast_time + Duration::from_millis(2500))
+            } else {
+                Some(Instant::now())
+            }
+        } else {
+            None
+        };
+
+        match (anim_deadline, toast_deadline) {
+            (Some(a), Some(t)) => Some(a.min(t)),
+            (Some(a), None) => Some(a),
+            (None, Some(t)) => Some(t),
+            (None, None) => None,
         }
     }
 
@@ -562,6 +598,105 @@ impl App {
                 self.pipeline.request_active(path);
                 self.trigger_prefetch();
                 self.render_state.window.request_redraw();
+            }
+        }
+    }
+
+    pub fn prompt_or_delete(&mut self) {
+        if self.current_path.is_none() || self.folder_files.is_empty() {
+            return;
+        }
+        if self.confirm_delete {
+            self.is_delete_dialog_open = true;
+            self.delete_dont_ask_again = false;
+            self.render_state.window.request_redraw();
+        } else {
+            self.execute_delete();
+        }
+    }
+
+    pub fn confirm_delete_dialog(&mut self) {
+        if self.delete_dont_ask_again {
+            self.confirm_delete = false;
+            crate::config::save_confirm_delete(false);
+        }
+        self.is_delete_dialog_open = false;
+        self.execute_delete();
+    }
+
+    pub fn cancel_delete_dialog(&mut self) {
+        self.is_delete_dialog_open = false;
+        self.render_state.window.request_redraw();
+    }
+
+    pub fn toggle_delete_dont_ask_again(&mut self) {
+        self.delete_dont_ask_again = !self.delete_dont_ask_again;
+        self.render_state.window.request_redraw();
+    }
+
+    pub fn show_toast(&mut self, message: String) {
+        self.toast_message = Some(message);
+        self.toast_time = Instant::now();
+        self.render_state.window.request_redraw();
+    }
+
+    pub fn execute_delete(&mut self) {
+        let file_to_delete = match self.current_path.clone() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let file_name = file_to_delete
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "image".to_string());
+
+        let delete_res = trash::delete(&file_to_delete);
+        let (success, is_recycled) = match delete_res {
+            Ok(_) => (true, true),
+            Err(e) => {
+                log::warn!("trash::delete failed: {:?}, attempting permanent deletion fallback", e);
+                match std::fs::remove_file(&file_to_delete) {
+                    Ok(_) => (true, false),
+                    Err(err) => {
+                        log::error!("Failed to delete file {:?}: {:?}", file_to_delete, err);
+                        self.show_toast(format!("Delete failed: {}", err));
+                        (false, false)
+                    }
+                }
+            }
+        };
+
+        if success {
+            self.cache.remove(&file_to_delete);
+            if is_recycled {
+                self.show_toast(format!("Deleted: {} (Recycle Bin)", file_name));
+            } else {
+                self.show_toast(format!("Deleted: {} (Permanently)", file_name));
+            }
+
+            // Remove from folder files list
+            if let Some(pos) = self.folder_files.iter().position(|p| p == &file_to_delete) {
+                self.folder_files.remove(pos);
+            }
+
+            if self.folder_files.is_empty() {
+                self.current_path = None;
+                self.filename = "No files in folder".to_string();
+                self.format_name = "None";
+                self.decode_us = 0;
+                self.tile_manager.clear();
+                self.render_state.clear_image();
+                self.update_window_title();
+                self.render_state.window.request_redraw();
+            } else {
+                if self.folder_index >= self.folder_files.len() {
+                    self.folder_index = self.folder_files.len() - 1;
+                }
+                let next_path = self.folder_files[self.folder_index].clone();
+                self.pending_path = None;
+                self.display_image_path(&next_path);
+                self.trigger_prefetch();
             }
         }
     }
@@ -830,6 +965,10 @@ impl App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_interaction = Instant::now();
                 self.cursor_pos = (position.x, position.y);
+                if self.is_delete_dialog_open {
+                    self.render_state.window.request_redraw();
+                    return true;
+                }
                 if self.is_panning {
                     let dx = (position.x - self.last_cursor_pos.0) as f32;
                     let dy = (position.y - self.last_cursor_pos.1) as f32;
@@ -842,6 +981,31 @@ impl App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 self.last_interaction = Instant::now();
+                if self.is_delete_dialog_open {
+                    if *button == MouseButton::Left && *state == ElementState::Pressed {
+                        let rects = HudBuilder::get_delete_dialog_rects(
+                            self.render_state.size.width as f32,
+                            self.render_state.size.height as f32,
+                        );
+                        let mx = self.cursor_pos.0 as f32;
+                        let my = self.cursor_pos.1 as f32;
+
+                        let in_rect = |(rx, ry, rw, rh): (f32, f32, f32, f32)| {
+                            mx >= rx && mx <= rx + rw && my >= ry && my <= ry + rh
+                        };
+
+                        if in_rect(rects.delete_btn) {
+                            self.confirm_delete_dialog();
+                        } else if in_rect(rects.cancel_btn) {
+                            self.cancel_delete_dialog();
+                        } else if in_rect(rects.checkbox) {
+                            self.toggle_delete_dont_ask_again();
+                        } else if !in_rect(rects.dialog) {
+                            self.cancel_delete_dialog();
+                        }
+                    }
+                    return true;
+                }
                 match button {
                     MouseButton::Left => {
                         if *state == ElementState::Pressed {
@@ -943,7 +1107,26 @@ impl App {
                 ..
             } => {
                 self.last_interaction = Instant::now();
+                if self.is_delete_dialog_open {
+                    match key {
+                        KeyCode::Enter | KeyCode::NumpadEnter => {
+                            self.confirm_delete_dialog();
+                        }
+                        KeyCode::Escape => {
+                            self.cancel_delete_dialog();
+                        }
+                        KeyCode::Space => {
+                            self.toggle_delete_dont_ask_again();
+                        }
+                        _ => {}
+                    }
+                    return true;
+                }
+
                 match key {
+                    KeyCode::Delete => {
+                        self.prompt_or_delete();
+                    }
                     KeyCode::ArrowRight | KeyCode::KeyD | KeyCode::PageDown => {
                         self.next_image();
                     }
@@ -1100,6 +1283,37 @@ impl App {
                         self.render_state.size.width as f32,
                         self.render_state.size.height as f32,
                     );
+                }
+
+                if self.is_delete_dialog_open {
+                    let screen_w = self.render_state.size.width as f32;
+                    let screen_h = self.render_state.size.height as f32;
+                    let rects = HudBuilder::get_delete_dialog_rects(screen_w, screen_h);
+                    let mx = self.cursor_pos.0 as f32;
+                    let my = self.cursor_pos.1 as f32;
+                    let hover_delete = mx >= rects.delete_btn.0 && mx <= rects.delete_btn.0 + rects.delete_btn.2 && my >= rects.delete_btn.1 && my <= rects.delete_btn.1 + rects.delete_btn.3;
+                    let hover_cancel = mx >= rects.cancel_btn.0 && mx <= rects.cancel_btn.0 + rects.cancel_btn.2 && my >= rects.cancel_btn.1 && my <= rects.cancel_btn.1 + rects.cancel_btn.3;
+                    let hover_cb = mx >= rects.checkbox.0 && mx <= rects.checkbox.0 + rects.checkbox.2 && my >= rects.checkbox.1 && my <= rects.checkbox.1 + rects.checkbox.3;
+
+                    hud.add_delete_confirmation_dialog(
+                        screen_w,
+                        screen_h,
+                        &self.filename,
+                        self.delete_dont_ask_again,
+                        hover_delete,
+                        hover_cancel,
+                        hover_cb,
+                    );
+                }
+
+                if let Some(ref msg) = self.toast_message {
+                    if self.toast_time.elapsed().as_secs_f32() < 2.5 {
+                        hud.add_toast_notification(
+                            self.render_state.size.width as f32,
+                            self.render_state.size.height as f32,
+                            msg,
+                        );
+                    }
                 }
 
                 let hud_verts = hud.finish();

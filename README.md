@@ -85,6 +85,7 @@ Measured on a Windows 10/11 x64 desktop (NVMe SSD, AMD Ryzen / Intel Core):
 | **T** | Cycle HDR Tone Mapping (Off ⟷ Reinhard Operator) |
 | **R** | Rotate image 90° clockwise |
 | **H** | Toggle HUD telemetry overlay visibility |
+| **Delete** | Delete active image (moves to Recycle Bin with confirmation modal & "Don't ask again" option) |
 | **Esc / Q** | Close viewer |
 
 ---
