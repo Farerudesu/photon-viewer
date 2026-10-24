@@ -443,6 +443,10 @@ impl RenderState {
         (&self.sampler_linear, &self.sampler_nearest)
     }
 
+    pub fn poll_device(&self) {
+        self.device.poll(wgpu::Maintain::Poll);
+    }
+
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;

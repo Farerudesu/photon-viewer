@@ -59,11 +59,6 @@ impl LruMemoryCache {
             (image.width as usize).saturating_mul(image.height as usize).saturating_mul(4),
         );
 
-        // If a single image is larger than the entire cache, don't store it
-        if size_bytes > self.max_bytes {
-            return;
-        }
-
         // If entry already exists, update it
         if let Some(&index) = self.map.get(&path) {
             let old_size = self
@@ -83,7 +78,9 @@ impl LruMemoryCache {
             return;
         }
 
-        // Evict until there is space
+        // Evict until there is space for the new image.
+        // If this image alone exceeds max_bytes, all older entries are evicted
+        // so the single active image can reside in cache without memory accumulation.
         while self.current_bytes + size_bytes > self.max_bytes && self.tail.is_some() {
             self.evict_tail();
         }

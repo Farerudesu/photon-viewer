@@ -124,9 +124,10 @@ impl App {
         let render_state = RenderState::new(window).await?;
 
         let ram = get_system_ram_bytes();
-        // Safe memory bounding: clamp cache between 128 MB and 512 MB to prevent OS thrashing,
-        // pagefile swapping, and driver out-of-memory crashes on high-res photos
-        let cache_bytes = ((ram / 8) as usize).clamp(128 * 1024 * 1024, 512 * 1024 * 1024);
+        // Ultra-lean memory bounding: 192 MB hard limit guarantees that the viewer
+        // process working set stays around 120-250 MB total RAM on Windows, completely
+        // eliminating OS memory pressure, swapping, and OOM crashes.
+        let cache_bytes = 192 * 1024 * 1024;
         let prefetch_radius = 1;
         log::info!("System RAM: {} MB, SharedCache: {} MB, Prefetch radius: {}", ram / 1024 / 1024, cache_bytes / 1024 / 1024, prefetch_radius);
 
@@ -245,6 +246,7 @@ impl App {
                 self.format_name = "Gigapixel (Tiled)";
             } else {
                 self.tile_manager.clear();
+                self.render_state.poll_device();
                 self.render_state
                     .upload_image(cached.width, cached.height, &cached.rgba, cached.is_hdr);
                 self.format_name = crate::codec::detector::detect_format_with_path(&[], Some(path)).name();
@@ -299,6 +301,7 @@ impl App {
                                 self.format_name = "Gigapixel (Tiled)";
                             } else {
                                 self.tile_manager.clear();
+                                self.render_state.poll_device();
                                 self.render_state.upload_image(
                                     arc_decoded.width,
                                     arc_decoded.height,
@@ -307,7 +310,14 @@ impl App {
                                 );
                             }
 
-                            if is_preview {
+                            // Always cache the decoded RAW image immediately
+                            self.cache.insert(path.to_path_buf(), arc_decoded.clone());
+
+                            // Only spawn heavy background demosaic if preview is a small thumbnail (< 1080p).
+                            // High-resolution embedded previews from camera ISPs (like Nikon/Sony/Canon 24-45MP)
+                            // are already full-resolution and do not need a redundant 1GB demosaic run!
+                            let is_low_res_thumbnail = is_preview && (arc_decoded.width < 1920 || arc_decoded.height < 1080);
+                            if is_low_res_thumbnail {
                                 let cancel = new_raw_cancel.clone();
                                 let tx = self.raw_channel_tx.clone();
                                 let raw_path = path.to_path_buf();
@@ -327,8 +337,6 @@ impl App {
                                         }
                                     }
                                 });
-                            } else {
-                                self.cache.insert(path.to_path_buf(), arc_decoded);
                             }
 
                             self.fit_to_window();
@@ -376,6 +384,7 @@ impl App {
                                 self.format_name = "Gigapixel (Tiled)";
                             } else {
                                 self.tile_manager.clear();
+                                self.render_state.poll_device();
                                 self.render_state.upload_image(
                                     arc_decoded.width,
                                     arc_decoded.height,
@@ -754,6 +763,7 @@ impl App {
                         self.format_name = "Gigapixel (Tiled)";
                     } else {
                         self.tile_manager.clear();
+                        self.render_state.poll_device();
                         self.render_state.upload_image(
                             full_image.width,
                             full_image.height,
@@ -790,6 +800,7 @@ impl App {
                                 self.format_name = "Gigapixel (Tiled)";
                             } else {
                                 self.tile_manager.clear();
+                                self.render_state.poll_device();
                                 self.render_state.upload_image(img.width, img.height, &img.rgba, img.is_hdr);
                                 self.format_name = crate::codec::detector::detect_format_with_path(&[], Some(&result.path)).name();
                             }

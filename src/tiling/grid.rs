@@ -37,7 +37,7 @@ impl TileGrid {
         let cols = (full_width + TILE_SIZE - 1) / TILE_SIZE;
         let rows = (full_height + TILE_SIZE - 1) / TILE_SIZE;
 
-        let overview = Arc::new(create_overview(full_width, full_height, &rgba_pixels, 4096));
+        let overview = Arc::new(create_overview(full_width, full_height, &rgba_pixels, 2048));
 
         Self {
             full_width,
