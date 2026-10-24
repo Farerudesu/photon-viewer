@@ -1,7 +1,5 @@
 <div align="center">
 
-![Photon Viewer Banner]()
-
 # PHOTON VIEWER
 **Ultra-fast, GPU-accelerated desktop image viewer engineered for instant opening of RAW camera photos, standard formats, and gigapixel imagery.**
 
