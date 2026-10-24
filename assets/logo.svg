@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#181B22"/>
+      <stop offset="100%" stop-color="#0B0D11"/>
+    </radialGradient>
+
+    <!-- Metallic Brushed Titanium Gradient -->
+    <linearGradient id="metalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="25%" stop-color="#A5ACB8"/>
+      <stop offset="50%" stop-color="#4B515D"/>
+      <stop offset="75%" stop-color="#D2D7E0"/>
+      <stop offset="100%" stop-color="#6A7280"/>
+    </linearGradient>
+
+    <linearGradient id="darkMetal" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2D323C"/>
+      <stop offset="100%" stop-color="#161920"/>
+    </linearGradient>
+
+    <!-- Glowing Amber Photon Beam -->
+    <linearGradient id="photonRay" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FF5500"/>
+      <stop offset="40%" stop-color="#FFAA00"/>
+      <stop offset="80%" stop-color="#FFE885"/>
+      <stop offset="100%" stop-color="#FFFFFF"/>
+    </linearGradient>
+
+    <!-- Outer Ring Gradient -->
+    <linearGradient id="ringGrad" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#8E97A6"/>
+      <stop offset="35%" stop-color="#404652"/>
+      <stop offset="70%" stop-color="#C8CFDB"/>
+      <stop offset="100%" stop-color="#232730"/>
+    </linearGradient>
+
+    <!-- Ray Glow Filter -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="blur1"/>
+      <feGaussianBlur stdDeviation="24" result="blur2"/>
+      <feMerge>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="512" height="512" rx="104" fill="url(#bgGrad)"/>
+  <rect width="510" height="510" x="1" y="1" rx="103" fill="none" stroke="#252A34" stroke-width="2"/>
+
+  <!-- Outer Aperture Ring Shadow -->
+  <circle cx="256" cy="256" r="196" fill="#0E1015" stroke="#1C2028" stroke-width="8"/>
+  <circle cx="256" cy="256" r="188" fill="none" stroke="url(#ringGrad)" stroke-width="14"/>
+
+  <!-- Aperture Blades Structure -->
+  <g stroke="#14171E" stroke-width="5" stroke-linejoin="round">
+    <!-- Blade 1 -->
+    <path d="M 256 76 A 180 180 0 0 1 405 154 L 305 210 L 256 120 Z" fill="url(#metalGrad)"/>
+    <!-- Blade 2 -->
+    <path d="M 405 154 A 180 180 0 0 1 436 256 L 330 256 L 310 180 Z" fill="url(#metalGrad)"/>
+    <!-- Blade 3 -->
+    <path d="M 436 256 A 180 180 0 0 1 384 384 L 290 310 L 330 240 Z" fill="url(#metalGrad)"/>
+    <!-- Blade 4 -->
+    <path d="M 384 384 A 180 180 0 0 1 256 436 L 256 330 L 310 320 Z" fill="url(#metalGrad)"/>
+    <!-- Blade 5 -->
+    <path d="M 256 436 A 180 180 0 0 1 128 384 L 205 305 L 240 345 Z" fill="url(#metalGrad)"/>
+    <!-- Blade 6 -->
+    <path d="M 128 384 A 180 180 0 0 1 76 256 L 182 256 L 195 320 Z" fill="url(#metalGrad)"/>
+    <!-- Blade 7 -->
+    <path d="M 76 256 A 180 180 0 0 1 128 128 L 222 205 L 182 245 Z" fill="url(#metalGrad)"/>
+    <!-- Blade 8 -->
+    <path d="M 128 128 A 180 180 0 0 1 256 76 L 256 182 L 202 180 Z" fill="url(#metalGrad)"/>
+  </g>
+
+  <!-- Inner Dark Iris Core -->
+  <circle cx="256" cy="256" r="115" fill="#0D0F14" stroke="#252A34" stroke-width="4"/>
+
+  <!-- Optical Prism Center (Triangle / Greek Phi Concept) -->
+  <polygon points="256,160 336,310 176,310" fill="none" stroke="#DCE1EA" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Central Vertical Optical Axis / Stem -->
+  <line x1="256" y1="170" x2="256" y2="400" stroke="#CBD2DE" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Radiant Amber Photon Ray Burst (Breaking Through Aperture) -->
+  <polygon points="190,300 240,250 445,100 405,80" fill="url(#photonRay)" opacity="0.4" filter="url(#glow)"/>
+  <polygon points="195,290 250,240 450,95 420,80" fill="url(#photonRay)" filter="url(#glow)"/>
+  <line x1="200" y1="285" x2="455" y2="90" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" filter="url(#glow)"/>
+
+  <!-- Central Flare Spark -->
+  <circle cx="256" cy="235" r="14" fill="#FFAE00" filter="url(#glow)"/>
+  <circle cx="256" cy="235" r="7" fill="#FFFFFF"/>
+</svg>
